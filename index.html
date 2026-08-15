@@ -65,11 +65,9 @@ main{padding:14px;max-width:1180px;margin:0 auto}
   padding:16px 16px 12px;margin-bottom:12px;
 }
 .hero .lbl{font-size:12.5px;color:var(--tx2);letter-spacing:.06em;font-weight:600}
-.hero .big{font-size:clamp(30px,7.8vw,46px);font-weight:800;letter-spacing:-.035em;line-height:1.1;margin:2px 0 4px}
-.hero .sub{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:14.5px;color:var(--tx2)}
-.hero .sub b{font-weight:700}
-.heroGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line);
-  border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:13px}
+.hero .big{font-size:clamp(30px,7.8vw,46px);font-weight:800;letter-spacing:-.035em;line-height:1.1;margin:2px 0 10px}
+.heroGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:0}
 .heroGrid div{background:var(--panel);padding:10px 12px}
 .heroGrid span{display:block;font-size:12px;color:var(--tx2);margin-bottom:2px}
 .heroGrid b{font-size:16.5px;font-weight:700}
@@ -243,12 +241,10 @@ body.dragging{user-select:none;-webkit-user-select:none}
   <div class="hero">
     <div class="lbl">총 평가액</div>
     <div class="big num" id="hValue">—</div>
-    <div class="sub">
-      <span>투자액 <b class="num" id="hCost">—</b></span>
-      <span>수익액 <b class="num" id="hProfit">—</b></span>
-      <span>수익률 <b class="num" id="hRate">—</b></span>
-    </div>
     <div class="heroGrid">
+      <div><span>투자액</span><b class="num" id="hCost">—</b></div>
+      <div><span>수익액</span><b class="num" id="hProfit">—</b></div>
+      <div><span>수익률</span><b class="num" id="hRate">—</b></div>
       <div><span>예수금 합계</span><b class="num" id="hCash">—</b></div>
       <div><span>기준환율 USD/KRW</span><b class="num" id="hFx">—</b></div>
     </div>
@@ -425,7 +421,7 @@ body.dragging{user-select:none;-webkit-user-select:none}
 'use strict';
 
 /* ─────────── 기본값 ─────────── */
-const ASSET_CLASSES = ['한국주식','미국주식','중국주식','일본주식','기타주식','금','가상화폐','한국채권','미국채권','현금'];
+const ASSET_CLASSES = ['한국주식','미국주식','중국주식','일본주식','기타주식','금','한국채권','미국채권','가상화폐','현금'];
 /* 자산군 색 — 서로 헷갈리지 않게 색상(hue)과 밝기를 충분히 벌려 놓았습니다. */
 const CLS_COLOR = {
   '한국주식':'#4C8DF6',  // 파랑
@@ -434,9 +430,9 @@ const CLS_COLOR = {
   '일본주식':'#A97BEA',  // 보라
   '기타주식':'#22C1D6',  // 청록
   '금':'#E8B93C',        // 금색
-  '가상화폐':'#F7931A',  // 주황
   '한국채권':'#7A8CA6',  // 청회색
   '미국채권':'#B5651D',  // 갈색
+  '가상화폐':'#F7931A',  // 주황
   '현금':'#D5DCE6',      // 밝은 회색
   '테마주식':'#FF8FB8'   // (지난 기록에만 남아 있는 옛 자산군 — 통계 그래프용)
 };

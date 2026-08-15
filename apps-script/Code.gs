@@ -307,12 +307,17 @@ function getQuotes(items) {
   var usCodes = uniq.filter(function (c) { return !isKrCode(c) && !isCoinCode(c); });
   var out = {}, errs = {};
 
-  // ── 가상화폐 (업비트 — 한 번에 여러 개) ──
+  // ── 가상화폐 (업비트) ──
+  // 여기서 문제가 생겨도 주식 시세까지 같이 죽지 않게 감싸 둡니다.
   if (coinCodes.length) {
-    var ct = quoteCoins(coinCodes);
+    var ct = {};
+    try { ct = quoteCoins(coinCodes); }
+    catch (e) { coinCodes.forEach(function (c) { errs[c] = 'upbit: ' + e.message; }); }
     coinCodes.forEach(function (c) {
       var r = ct[c.toUpperCase()];
-      if (r) out[c] = r; else errs[c] = 'upbit: 이 마켓 코드를 찾지 못했습니다. KRW-BTC 형태여야 합니다.';
+      if (r && r.price > 0) out[c] = r;
+      else errs[c] = (r && r.error) || errs[c] ||
+        'upbit: 이 마켓 코드를 찾지 못했습니다. KRW-BTC 형태여야 하고, 업비트에 상장된 코인이어야 합니다.';
     });
   }
 
@@ -412,10 +417,14 @@ function gfBatch(symbols) {
 function quoteCoins(codes) {
   var res = {};
   var ups = codes.map(function (c) { return String(c).trim().toUpperCase(); });
-  try {
-    var url = 'https://api.upbit.com/v1/ticker?markets=' + encodeURIComponent(ups.join(','));
+  var names = {};
+  try { names = coinNames_(); } catch (e) {}
+
+  // 한 종목이라도 마켓 코드가 틀리면 업비트가 400 을 돌려주며 통째로 실패합니다.
+  // 그래서 묶어서 한 번 부르고, 실패하면 하나씩 다시 물어 어느 코드가 문제인지 가립니다.
+  function ask(list) {
+    var url = 'https://api.upbit.com/v1/ticker?markets=' + encodeURIComponent(list.join(','));
     var arr = JSON.parse(fetchText(url, { 'Accept': 'application/json' }));
-    var names = coinNames_();
     (arr || []).forEach(function (t) {
       var p = num(t.trade_price);
       if (isFinite(p) && p > 0) {
@@ -423,9 +432,17 @@ function quoteCoins(codes) {
                           prev: num(t.prev_closing_price), change: num(t.signed_change_rate) * 100 };
       }
     });
+  }
+
+  try {
+    ask(ups);
   } catch (e) {
-    ups.forEach(function (c) { res[c] = null; });
-    throw new Error('upbit: ' + e.message);
+    var first = e.message;
+    ups.forEach(function (c) {
+      if (res[c]) return;
+      try { ask([c]); }
+      catch (e2) { res[c] = { ok: false, error: 'upbit: ' + e2.message + ' (묶음 조회: ' + first + ')' }; }
+    });
   }
   return res;
 }
