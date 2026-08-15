@@ -43,6 +43,9 @@ header{
 .hrow{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .brand{font-weight:800;font-size:16.5px;letter-spacing:-.03em;margin-right:auto;display:flex;align-items:center;gap:7px}
 .brand i{width:5px;height:17px;background:var(--gold);border-radius:1px;display:block}
+.sync{font-size:12px;color:var(--tx2);white-space:nowrap;margin-right:2px}
+.sync.bad{color:var(--up);font-weight:600}
+@media(max-width:640px){.sync{display:none}}
 .hbtn{padding:7px 12px;border-radius:8px;background:var(--panel2);border:1px solid var(--line2);font-weight:600;font-size:14px}
 .hbtn:active{transform:scale(.97)}
 .hbtn.pri{background:var(--gold);color:#1A1405;border-color:var(--gold)}
@@ -216,6 +219,7 @@ body.dragging{user-select:none;-webkit-user-select:none}
 <header>
   <div class="hrow">
     <div class="brand"><i></i>자산지기</div>
+    <span class="sync" id="syncState"></span>
     <button class="hbtn" id="btnReload" title="시트에서 다시 불러오기">불러오기</button>
     <button class="hbtn" id="btnSave">저장하기</button>
     <button class="hbtn pri" id="btnUpdate">업데이트</button>
@@ -361,7 +365,14 @@ body.dragging{user-select:none;-webkit-user-select:none}
       <div class="row">
         <button class="btn pri" id="btnCfgSave">연결 저장</button>
         <button class="btn" id="btnDiag">연결 진단</button>
+        <button class="btn" id="btnLink">다른 기기 연결하기</button>
       </div>
+      <label style="display:flex;gap:9px;align-items:flex-start;margin-top:13px;padding:11px;
+                    border:1px solid var(--line2);border-radius:9px;cursor:pointer">
+        <input type="checkbox" id="cfgAuto" style="width:auto;margin-top:3px">
+        <span><b>자동 동기화</b><br>
+        <span class="hint">고친 내용을 잠시 뒤 시트에 자동으로 저장하고, 앱으로 돌아올 때 다른 기기에서 바뀐 내용을 자동으로 가져옵니다.</span></span>
+      </label>
       <div id="diagOut" style="margin-top:11px"></div>
     </div>
   </div>
@@ -438,7 +449,8 @@ function seedState(){
     presets: JSON.parse(JSON.stringify(DEFAULT_PRESETS)),
     activePreset: '올웨더 연간',
     reb:{ acct:'', preset:'', mode:'all', budget:0, rows:[] },
-    updatedAt:''
+    updatedAt:'',
+    rev:0, savedAt:'', savedBy:''     // 기기 간 동기화용
   };
 }
 
@@ -447,18 +459,49 @@ const LS = {
   get(k,d){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } },
   set(k,v){ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
 };
-let CFG = LS.get('ad.cfg', { url:'', secret:'' });
+let CFG = LS.get('ad.cfg', { url:'', secret:'', auto:true });
+if(CFG.auto===undefined) CFG.auto = true;
 let S   = LS.get('ad.state', null) || seedState();
 let SNAPS = LS.get('ad.snaps', []);
 let dirty = false;
 
+/* ─────────── 기기 간 자동 동기화 ───────────
+   시트에 저장된 내용에는 rev(저장 횟수)가 함께 들어갑니다.
+   내가 마지막으로 받아 온 rev(baseRev)보다 시트 쪽이 크면
+   다른 기기가 그 사이에 저장했다는 뜻이므로 덮어쓰지 않고 물어봅니다. */
+const DEV = (function(){
+  let d = LS.get('ad.dev','');
+  if(!d){ d = 'd' + Math.random().toString(36).slice(2,8); LS.set('ad.dev', d); }
+  return d;
+})();
+let baseRev  = +(S && S.rev) || 0;   // 내가 알고 있는 시트의 최신 버전
+let synced   = LS.get('ad.synced', false);   // 이 기기가 시트와 한 번이라도 맞춘 적이 있는가
+let syncing  = false;                // 저장/불러오기 진행 중
+let autoT    = null;                 // 자동 저장 대기 타이머
+let syncNote = '';                   // 화면에 보여줄 동기화 상태
+
 function persist(){ LS.set('ad.state', S); }
-function markDirty(){ dirty = true; persist(); updateSaveBtn(); }
-function updateSaveBtn(){
-  const b = $('#btnSave');
-  b.textContent = dirty ? '저장하기 •' : '저장하기';
-  b.classList.toggle('pri', dirty);
+function markDirty(){ dirty = true; persist(); updateSaveBtn(); queueAutoSave(); }
+
+function canSync(){ return !!CFG.url; }
+function queueAutoSave(){
+  if(!canSync() || !CFG.auto) return;
+  clearTimeout(autoT);
+  autoT = setTimeout(()=>{ pushToSheet(true); }, 6000);   // 손을 뗀 뒤 6초
 }
+
+function updateSaveBtn(){
+  const b = $('#btnSave'); if(!b) return;
+  b.textContent = syncing ? '저장 중…' : (dirty ? '저장하기 •' : '저장하기');
+  b.classList.toggle('pri', dirty && !syncing);
+  b.disabled = syncing;
+  const s = $('#syncState');
+  if(s){
+    s.textContent = syncNote;
+    s.className = 'sync' + (syncNote.indexOf('충돌')>=0 ? ' bad' : '');
+  }
+}
+function setSync(msg){ syncNote = msg; updateSaveBtn(); }
 
 function normalize(st){
   const d = seedState();
@@ -473,6 +516,7 @@ function normalize(st){
   st.reb = Object.assign({ acct:'', preset:'', mode:'all', budget:0, rows:[] }, st.reb||{});
   if(!Array.isArray(st.reb.rows)) st.reb.rows = [];
   st.reb.rows.forEach(r=>{ if(r) r.cls = migrateClass(r.name, r.cls); });
+  st.rev = +st.rev || 0; st.savedAt = st.savedAt || ''; st.savedBy = st.savedBy || '';
   if(!st.activePreset || !st.presets.some(p=>p.name===st.activePreset)) st.activePreset = st.presets[0].name;
   st.accounts.forEach(a=>{
     a.cur = a.cur==='USD' ? 'USD' : 'KRW';
@@ -1398,36 +1442,133 @@ function saveDialog(){
 }
 
 async function doSave(withSnap, key){
+  if(withSnap && !/^\d{8}$/.test(key)){ toast('시점은 mmddyyyy 8자리로 넣어주세요.','err'); return; }
   const t = toast('<span class="spin"></span>저장 중…','',30000);
+  const ok = await pushToSheet(false);
+  if(!ok){ t.remove(); return; }
   try{
-    await api('save',{ state:S });
     if(withSnap){
-      if(!/^\d{8}$/.test(key)) throw new Error('시점은 mmddyyyy 8자리로 넣어주세요.');
       const r = await api('snapshot',{ key, summary:summaryOf(compute()), state:S });
-      SNAPS = r.snapshots; LS.set('ad.snaps',SNAPS);
+      SNAPS = r.snapshots; LS.set('ad.snaps',SNAPS); renderStat();
     }
-    dirty=false; persist(); updateSaveBtn(); renderStat();
     t.remove(); toast('저장했습니다.'+(withSnap?` 시점 ${keyLabel(key)} 기록 완료.`:''),'ok');
-  }catch(e){ t.remove(); toast('저장 실패: '+e.message,'err',6000); }
+  }catch(e){ t.remove(); toast('시점 기록 실패: '+e.message,'err',6000); }
 }
 
-async function loadFromServer(silent){
-  if(!CFG.url){ if(!silent) toast('설정에서 서버 주소를 먼저 넣어주세요.','err'); return; }
-  const t = silent?null:toast('<span class="spin"></span>불러오는 중…','',30000);
+/* 이 기기의 내용을 시트로 올립니다.
+   올리기 전에 시트를 한 번 읽어, 다른 기기가 먼저 저장했는지 확인합니다. */
+async function pushToSheet(auto){
+  if(!canSync() || syncing) return false;
+  clearTimeout(autoT);
+  syncing = true; setSync('저장 중…');
+  try{
+    const cur = await api('load');
+    const srv = cur.state && cur.state.accounts ? cur.state : null;
+    const srvRev = srv ? (+srv.rev||0) : 0;
+
+    if(srv && srvRev > baseRev && (srv.savedBy||'') !== DEV){
+      syncing = false;
+      setSync('충돌 — 확인 필요');
+      conflictModal(srv, cur.snapshots||[]);
+      return false;
+    }
+
+    S.rev     = Math.max(srvRev, baseRev) + 1;
+    S.savedBy = DEV;
+    S.savedAt = new Date().toISOString();
+    await api('save',{ state:S });
+
+    baseRev = S.rev; dirty = false; persist();
+    synced = true; LS.set('ad.synced', true);
+    SNAPS = cur.snapshots || SNAPS; LS.set('ad.snaps', SNAPS);
+    syncing = false; setSync('저장됨 · ' + new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}));
+    return true;
+  }catch(e){
+    syncing = false; setSync('저장 실패');
+    if(!auto) toast('저장 실패: '+e.message,'err',6000);
+    else queueAutoSave();                       // 자동 저장은 조용히 다시 시도
+    return false;
+  }
+}
+
+/* 시트가 더 최신이면 가져옵니다. force=true 면 무조건 시트 내용으로 바꿉니다. */
+async function pullFromSheet(force, silent){
+  if(!canSync()){ if(!silent) toast('설정에서 서버 주소를 먼저 넣어주세요.','err'); return; }
+  if(syncing) return;
+  syncing = true; if(!silent) setSync('불러오는 중…');
+  const t = silent ? null : toast('<span class="spin"></span>불러오는 중…','',30000);
   try{
     const r = await api('load');
-    if(r.state && r.state.accounts){
-      if(dirty && silent){                       // 자동 불러오기가 미저장 수정을 삼키지 않게
-        SNAPS = r.snapshots||[]; LS.set('ad.snaps',SNAPS);
-        toast('저장하지 않은 수정이 있어 이 기기의 내용을 유지했습니다. <b>불러오기</b>를 누르면 시트 내용으로 바꿉니다.','',7000);
-        renderAll(); return;
-      }
-      S = normalize(r.state); persist();
-    }
     SNAPS = r.snapshots||[]; LS.set('ad.snaps',SNAPS);
-    dirty=false; renderAll(); if(t){ t.remove(); toast('시트에서 불러왔습니다.','ok'); }
-  }catch(e){ if(t){ t.remove(); toast('불러오기 실패: '+e.message,'err',6000); } }
+    const srv = (r.state && r.state.accounts) ? r.state : null;
+    const srvRev = srv ? (+srv.rev||0) : 0;
+
+    if(!srv){ syncing=false; setSync('시트가 비어 있습니다'); if(t){ t.remove(); toast('시트에 저장된 내용이 없습니다. 먼저 저장해주세요.','err',5000); } renderAll(); return; }
+
+    // 이 기기가 시트와 한 번도 안 맞춰봤다면(=처음 연결) 시트 쪽이 기준입니다.
+    const newer = !synced || srvRev > baseRev;
+
+    if(!force && dirty){
+      if(newer){                                  // 양쪽 다 바뀐 상태
+        syncing = false; setSync('충돌 — 확인 필요');
+        if(t) t.remove();
+        conflictModal(srv, SNAPS);
+      }else{                                      // 내 쪽만 바뀜 — 그대로 둡니다
+        syncing = false; setSync('저장 대기 중'); renderAll();
+        if(t){ t.remove(); toast('시트보다 이 기기가 최신입니다. 저장하면 반영됩니다.','ok'); }
+      }
+      return;
+    }
+    if(!force && !newer){                          // 이미 최신
+      syncing=false; setSync('최신 상태'); renderAll();
+      if(t){ t.remove(); toast('이미 최신 내용입니다.','ok'); }
+      return;
+    }
+
+    S = normalize(srv); baseRev = +S.rev||0; dirty = false; persist();
+    synced = true; LS.set('ad.synced', true);
+    syncing=false; setSync('불러옴 · ' + new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}));
+    renderAll();
+    if(t){ t.remove(); toast('시트에서 불러왔습니다.','ok'); }
+    else toast('다른 기기에서 바뀐 내용을 가져왔습니다.','ok',4000);
+  }catch(e){
+    syncing=false; setSync('연결 실패');
+    if(t){ t.remove(); toast('불러오기 실패: '+e.message,'err',6000); }
+  }
 }
+
+/* 두 기기에서 동시에 고쳤을 때 어느 쪽을 남길지 고릅니다. */
+function conflictModal(srv, snaps){
+  const when = srv.savedAt ? new Date(srv.savedAt).toLocaleString('ko-KR') : '알 수 없음';
+  const m = modal('내용이 갈렸습니다', `
+    <div class="hint" style="line-height:1.7">
+      이 기기에서 고친 내용이 아직 시트에 올라가지 않았는데,
+      그 사이 <b>다른 기기가 시트에 저장</b>했습니다. (시트 저장 시각 ${esc(when)})<br>
+      한쪽을 고르면 다른 쪽 수정은 사라집니다. 어느 쪽을 남길까요?
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+      <button class="btn" id="cfKeepMine" style="text-align:left;padding:12px">
+        <b>이 기기 내용을 올리기</b><br><span class="mut" style="font-weight:400">시트의 내용을 지금 화면 내용으로 덮어씁니다.</span></button>
+      <button class="btn" id="cfTakeSrv" style="text-align:left;padding:12px">
+        <b>시트 내용을 가져오기</b><br><span class="mut" style="font-weight:400">이 기기에서 고친 내용은 버립니다.</span></button>
+    </div>`, null, '');
+  m.querySelector('[data-ok]').style.display='none';
+  m.querySelector('[data-x]').textContent='나중에';
+  m.querySelector('#cfKeepMine').onclick = async ()=>{
+    baseRev = +srv.rev||0;                 // 서버 버전을 기준으로 삼고 그 위에 올립니다
+    m.remove(); await pushToSheet(false);
+    toast('이 기기 내용으로 맞췄습니다.','ok');
+  };
+  m.querySelector('#cfTakeSrv').onclick = ()=>{
+    S = normalize(srv); baseRev = +S.rev||0; dirty=false; persist();
+    SNAPS = snaps||SNAPS; LS.set('ad.snaps',SNAPS);
+    m.remove(); setSync('시트 내용으로 맞춤'); renderAll();
+    toast('시트 내용으로 맞췄습니다.','ok');
+  };
+}
+
+/* 이전 이름 유지 — 헤더의 불러오기 버튼이 씁니다. */
+function loadFromServer(silent){ return pullFromSheet(!silent, silent); }
 
 /* ═══════════ 통계 ═══════════ */
 function stats(){
@@ -1559,11 +1700,37 @@ function bindStat(){
 /* ═══════════ 설정 ═══════════ */
 function bindCfg(){
   $('#cfgUrl').value=CFG.url; $('#cfgSecret').value=CFG.secret;
+  $('#cfgAuto').checked = !!CFG.auto;
+  $('#cfgAuto').onchange = e=>{
+    CFG.auto = e.target.checked; LS.set('ad.cfg',CFG);
+    toast(CFG.auto ? '자동 동기화를 켰습니다.' : '자동 동기화를 껐습니다. 저장하기로 직접 올려주세요.','ok');
+    if(CFG.auto && dirty) queueAutoSave();
+  };
   $('#btnCfgSave').onclick = async ()=>{
     CFG.url=$('#cfgUrl').value.trim(); CFG.secret=$('#cfgSecret').value.trim();
     LS.set('ad.cfg',CFG);
-    try{ await api('ping'); toast('연결됐습니다.','ok'); loadFromServer(true); }
+    try{ await api('ping'); toast('연결됐습니다.','ok'); pullFromSheet(false,false); }
     catch(e){ toast('연결 실패: '+e.message,'err',6000); }
+  };
+  $('#btnLink').onclick = ()=>{
+    if(!CFG.url){ toast('먼저 위에 주소와 비밀키를 넣고 연결을 저장해주세요.','err'); return; }
+    const link = location.href.split('#')[0] + '#s=' +
+      btoa(unescape(encodeURIComponent(JSON.stringify({ u:CFG.url, k:CFG.secret }))));
+    modal('다른 기기 연결하기', `
+      <div class="hint" style="line-height:1.7">아래 주소를 휴대폰(또는 PC)으로 보내서 열면
+        <b>주소와 비밀키가 자동으로 채워지고</b> 시트 내용까지 바로 불러옵니다. 직접 입력할 필요가 없습니다.</div>
+      <div class="fld" style="margin-top:12px"><label>연결 주소</label>
+        <input id="lkUrl" value="${esc(link)}" readonly style="font-size:12px"></div>
+      <div class="row"><button class="btn pri" id="lkCopy">주소 복사</button></div>
+      <div class="hint" style="margin-top:12px;color:var(--up)">이 주소에는 <b>비밀키가 들어 있습니다.</b>
+        본인에게 보내는 용도로만 쓰고, 단톡방처럼 남이 보는 곳에는 올리지 마세요.</div>`, null, '');
+    $('.mask [data-ok]').style.display='none';
+    $('.mask [data-x]').textContent='닫기';
+    $('#lkCopy').onclick = async ()=>{
+      const el=$('#lkUrl'); el.select();
+      try{ await navigator.clipboard.writeText(el.value); toast('복사했습니다.','ok'); }
+      catch(e){ document.execCommand('copy'); toast('복사했습니다.','ok'); }
+    };
   };
   $('#btnDiag').onclick = async ()=>{
     const o=$('#diagOut'); o.innerHTML='<span class="spin"></span> 진단 중…';
@@ -1592,21 +1759,60 @@ function bindCfg(){
     S=seedState(); markDirty(); renderAll(); toast('되돌렸습니다.','ok'); };
 }
 
+/* 다른 기기에서 만든 연결 주소(#s=…)로 들어온 경우 설정을 자동으로 채웁니다. */
+function applyLinkConfig(){
+  const m = /[#&]s=([^&]+)/.exec(location.hash || '');
+  if(!m) return false;
+  try{
+    const j = JSON.parse(decodeURIComponent(escape(atob(m[1]))));
+    if(!j || !j.u) return false;
+    CFG.url = j.u; CFG.secret = j.k || ''; if(CFG.auto===undefined) CFG.auto = true;
+    LS.set('ad.cfg', CFG);
+    history.replaceState(null, '', location.pathname + location.search);  // 주소창에서 비밀키를 지웁니다
+    synced = false; LS.set('ad.synced', false);   // 시트 쪽을 기준으로 받아옵니다
+    toast('연결 정보를 받았습니다. 시트에서 내용을 불러옵니다.','ok',4000);
+    return true;
+  }catch(e){ return false; }
+}
+
 /* ═══════════ 시작 ═══════════ */
 function init(){
+  const fromLink = applyLinkConfig();
   $$('nav button').forEach(b=>b.onclick=()=>show(b.dataset.v));
   $('#btnUpdate').onclick  = updatePrices;
   $('#btnSave').onclick    = saveDialog;
-  $('#btnReload').onclick  = ()=>loadFromServer(false);
+  $('#btnReload').onclick  = ()=>pullFromSheet(true,false);
   $('#btnAddAcct').onclick = ()=>acctModal(-1);
   $('#btnMatchAll').onclick  = autoMatch;
   $('#btnMatchAll2').onclick = autoMatch;
   S = normalize(S);
   bindHold(); bindReb(); bindCodes(); bindStat(); bindCfg();
   renderAll();
-  show(LS.get('ad.tab','dash'));
-  if(CFG.url) loadFromServer(true);
+  show(LS.get('ad.tab', fromLink ? 'dash' : 'dash'));
+  if(CFG.url) pullFromSheet(false, true);
   else { toast('설정 화면에서 서버를 연결하면 시세 조회와 기기 간 동기화가 켜집니다.','',6000); show('cfg'); }
+
+  /* ── 앱을 다시 볼 때 자동으로 맞춥니다 ──
+     휴대폰에서 앱을 내렸다 다시 열거나, PC에서 다른 탭에 갔다 돌아올 때 걸립니다. */
+  let lastSync = Date.now();
+  document.addEventListener('visibilitychange', ()=>{
+    if(!canSync() || !CFG.auto) return;
+    if(document.visibilityState === 'hidden'){
+      if(dirty) pushToSheet(true);              // 앱을 떠날 때 밀린 내용을 올립니다
+      return;
+    }
+    if(Date.now() - lastSync < 5000) return;    // 너무 자주 부르지 않게
+    lastSync = Date.now();
+    if(dirty) pushToSheet(true); else pullFromSheet(false, true);
+  });
+  window.addEventListener('online', ()=>{
+    if(canSync() && CFG.auto && dirty) pushToSheet(true);
+  });
+  /* 앱을 이미 켜 둔 상태에서 연결 주소를 누르면 새로고침이 일어나지 않으므로 여기서 받습니다. */
+  window.addEventListener('hashchange', ()=>{
+    if(applyLinkConfig()){ bindCfg(); pullFromSheet(true, false); }
+  });
+
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
   window.addEventListener('beforeunload', e=>{ if(dirty){ e.preventDefault(); e.returnValue=''; } });
 }
