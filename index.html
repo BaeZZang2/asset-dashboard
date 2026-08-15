@@ -85,13 +85,16 @@ main{padding:14px;max-width:1180px;margin:0 auto}
 
 /* ── 투자 / 연금 두 박스 (항상 한 줄) ── */
 .duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-bottom:12px}
+.duo.three{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)}
 .duo .box{border:1px solid var(--line);border-radius:var(--r);background:var(--panel);padding:13px 14px;min-width:0}
 .duo .box.inv{border-top:2px solid #4C8DF6}
 .duo .box.pen{border-top:2px solid #3FBF7F}
+.duo .box.cry{border-top:2px solid #F7931A}
 .duo .bt{display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;color:var(--tx2);letter-spacing:.02em}
 .duo .bt i{width:9px;height:9px;border-radius:2px;display:block}
 .duo .box.inv .bt i{background:#4C8DF6}
 .duo .box.pen .bt i{background:#3FBF7F}
+.duo .box.cry .bt i{background:#F7931A}
 .duo .bv{font-size:clamp(19px,4.6vw,27px);font-weight:800;letter-spacing:-.03em;margin:5px 0 8px;line-height:1.15;
   overflow:hidden;text-overflow:ellipsis}
 .duo .br{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--tx2);padding:2px 0}
@@ -227,6 +230,7 @@ body.dragging{user-select:none;-webkit-user-select:none}
   <nav>
     <button data-v="dash" class="on">한눈에</button>
     <button data-v="hold">보유종목</button>
+    <button data-v="coin">가상화폐</button>
     <button data-v="reb">리밸런싱</button>
     <button data-v="stat">통계</button>
     <button data-v="cfg">설정</button>
@@ -254,8 +258,8 @@ body.dragging{user-select:none;-webkit-user-select:none}
     </div>
   </div>
 
-  <!-- 투자 / 연금 — 항상 한 줄에 나란히 -->
-  <div class="duo">
+  <!-- 투자 / 연금 / 가상자산 — 항상 한 줄에 나란히 -->
+  <div class="duo" id="duoBoxes">
     <div class="box inv">
       <div class="bt"><i></i>투자 계좌</div>
       <div class="bv num" id="dInvVal">—</div>
@@ -269,6 +273,13 @@ body.dragging{user-select:none;-webkit-user-select:none}
       <div class="br"><span>투자액</span><b class="num" id="dPenCost">—</b></div>
       <div class="br"><span>수익액</span><b class="num" id="dPenPf">—</b></div>
       <div class="br"><span>수익률</span><b class="num" id="dPenRet">—</b></div>
+    </div>
+    <div class="box cry" id="boxCry" hidden>
+      <div class="bt"><i></i>가상자산</div>
+      <div class="bv num" id="dCryVal">—</div>
+      <div class="br"><span>투자액</span><b class="num" id="dCryCost">—</b></div>
+      <div class="br"><span>수익액</span><b class="num" id="dCryPf">—</b></div>
+      <div class="br"><span>수익률</span><b class="num" id="dCryRet">—</b></div>
     </div>
   </div>
 
@@ -305,6 +316,21 @@ body.dragging{user-select:none;-webkit-user-select:none}
     </div>
   </div></div>
   <div id="acctPanels"></div>
+</section>
+
+<!-- ══════════ 가상화폐 ══════════ -->
+<section class="view" id="v-coin">
+  <div class="panel"><div class="pb">
+    <div class="row">
+      <button class="btn" id="btnAddWallet">+ 거래소·지갑 추가</button>
+      <button class="btn" id="btnMatchCoin">코인 자동매칭</button>
+      <span class="hint" style="flex:1;min-width:220px">종목명에 <b>비트코인</b>처럼 이름을 넣고 <b>코인 자동매칭</b>을 누르면
+        코드(<b>KRW-BTC</b>)가 붙고, <b>업데이트</b> 때 업비트 시세를 원화로 가져옵니다.
+        보유수량은 소수점 여덟째 자리까지 넣을 수 있습니다.
+        여기 넣은 코인은 자산군 <b>가상화폐</b>로 <b>한눈에</b> 탭의 총 평가액과 비중에 함께 잡힙니다.</span>
+    </div>
+  </div></div>
+  <div id="coinPanels"></div>
 </section>
 
 <!-- ══════════ 리밸런싱 ══════════ -->
@@ -399,7 +425,7 @@ body.dragging{user-select:none;-webkit-user-select:none}
 'use strict';
 
 /* ─────────── 기본값 ─────────── */
-const ASSET_CLASSES = ['한국주식','미국주식','중국주식','일본주식','기타주식','금','한국채권','미국채권','현금'];
+const ASSET_CLASSES = ['한국주식','미국주식','중국주식','일본주식','기타주식','금','가상화폐','한국채권','미국채권','현금'];
 /* 자산군 색 — 서로 헷갈리지 않게 색상(hue)과 밝기를 충분히 벌려 놓았습니다. */
 const CLS_COLOR = {
   '한국주식':'#4C8DF6',  // 파랑
@@ -408,6 +434,7 @@ const CLS_COLOR = {
   '일본주식':'#A97BEA',  // 보라
   '기타주식':'#22C1D6',  // 청록
   '금':'#E8B93C',        // 금색
+  '가상화폐':'#F7931A',  // 주황
   '한국채권':'#7A8CA6',  // 청회색
   '미국채권':'#B5651D',  // 갈색
   '현금':'#D5DCE6',      // 밝은 회색
@@ -520,7 +547,7 @@ function normalize(st){
   if(!st.activePreset || !st.presets.some(p=>p.name===st.activePreset)) st.activePreset = st.presets[0].name;
   st.accounts.forEach(a=>{
     a.cur = a.cur==='USD' ? 'USD' : 'KRW';
-    a.grp = a.grp==='연금' ? '연금' : '투자';
+    a.grp = (a.grp==='연금'||a.grp==='가상자산') ? a.grp : '투자';
     a.cash = +a.cash||0;
     a.h = (Array.isArray(a.h)?a.h:[]).map(h=>({
       n:String(h.n??''), c:String(h.c??''), a:migrateClass(h.n, h.a),
@@ -546,7 +573,16 @@ const qty = n => (n==null||!isFinite(n)) ? '—' : (Math.abs(n%1)<1e-9 ? nfmt(n)
 /* 계좌 통화별 표시 규칙
    · KRW 계좌 : 모두 정수 + 천단위 ,
    · USD 계좌 : 매입금액은 소수 4째자리 고정, 수익액·평가금액은 소수 2째자리 고정 */
-function fmts(isUSD){
+function fmts(isUSD, isCoin){
+  if(isCoin) return {                 // 코인은 수량이 아주 잘게 쪼개집니다
+    qty  : n=>nfmt(n,0,8),
+    cost : n=>nfmt(n,0,0),
+    price: n=>nfmt(n,0,2),
+    val  : n=>nfmt(n,0,0),
+    avg  : n=>nfmt(n,0,2),
+    money: n=>nfmt(n,0,0),
+    pf   : n=>nfmt(n,0,0)
+  };
   return isUSD ? {
     qty  : n=>nfmt(n,0,4),
     cost : n=>nfmt(n,4,4),          // 매입금액 (입력칸)
@@ -635,10 +671,10 @@ function compute(){
   const byGrp = g => accts.filter(a=>a.grp===g);
   const gsum = (g,k)=> byGrp(g).reduce((s,a)=>s+a[k],0);
 
-  const alloc = {}, allocInv = {}, allocPen = {};   // 전체 / 투자 계좌 / 연금 계좌
+  const alloc = {}, allocInv = {}, allocPen = {}, allocCry = {};   // 전체 / 투자 / 연금 / 가상자산
   S.accounts.forEach(a=>{
     const r = (a.cur==='USD') ? fx : 1;
-    const g = a.grp==='연금' ? allocPen : allocInv;
+    const g = a.grp==='연금' ? allocPen : (a.grp==='가상자산' ? allocCry : allocInv);
     const add = (c,v)=>{ alloc[c]=(alloc[c]||0)+v; g[c]=(g[c]||0)+v; };
     a.h.forEach(h=>add(h.a||'기타주식', holdValue(h)*r));
     if(+a.cash) add('현금', (+a.cash)*r);
@@ -655,11 +691,13 @@ function compute(){
 
   const cost=sum('cost'), value=sum('value');
   return {
-    accts, alloc, allocInv, allocPen, items, fx,
+    accts, alloc, allocInv, allocPen, allocCry, items, fx,
     cost, value, profit:value-cost, rate: cost>0?(value-cost)/cost:0,
     cash:sum('cash'),
+    hasCry: S.accounts.some(a=>a.grp==='가상자산'),
     inv:{cost:gsum('투자','cost'), value:gsum('투자','value')},
-    pen:{cost:gsum('연금','cost'), value:gsum('연금','value')}
+    pen:{cost:gsum('연금','cost'), value:gsum('연금','value')},
+    cry:{cost:gsum('가상자산','cost'), value:gsum('가상자산','value')}
   };
 }
 
@@ -699,8 +737,10 @@ function renderDash(C){
   const p=$('#hProfit'), r=$('#hRate');
   p.textContent = signed(C.profit, won); p.className='num '+sgn(C.profit);
   r.textContent = signed(C.rate, x=>pct(x,2)); r.className='num '+sgn(C.rate);
-  /* 투자 / 연금 박스 */
-  [['Inv',C.inv],['Pen',C.pen]].forEach(([k,g])=>{
+  /* 투자 / 연금 / 가상자산 박스 — 가상자산은 계좌가 있을 때만 보입니다 */
+  $('#boxCry').hidden = !C.hasCry;
+  $('#duoBoxes').classList.toggle('three', C.hasCry);
+  [['Inv',C.inv],['Pen',C.pen],['Cry',C.cry]].forEach(([k,g])=>{
     const pf=g.value-g.cost, ret=g.cost>0?pf/g.cost:0;
     $('#d'+k+'Val').textContent  = won(g.value);
     $('#d'+k+'Cost').textContent = won(g.cost);
@@ -742,22 +782,23 @@ function renderDash(C){
     </div>`).join('');
 
   /* 자산군 표 — 자산군마다 투자 계좌 / 연금 계좌가 얼마씩인지 함께 보여줍니다 */
-  const totInv = Object.values(C.allocInv).reduce((a,b)=>a+b,0);
-  const totPen = Object.values(C.allocPen).reduce((a,b)=>a+b,0);
+  const grpCols = [['투자 계좌', C.allocInv], ['연금 계좌', C.allocPen]];
+  if(C.hasCry) grpCols.push(['가상자산', C.allocCry]);
+  const gTot = grpCols.map(([,m])=>Object.values(m).reduce((a,b)=>a+b,0));
+  const sub  = txt => `<em class="mut" style="font-style:normal;display:block;font-size:11.5px">${txt}</em>`;
   const cell = (v,base)=>`<td class="num">${v?won(v):'<span class="mut">—</span>'}` +
-    (v?`<em class="mut" style="font-style:normal;display:block;font-size:11.5px">${pct(base?v/base:0,1)}</em>`:'') + `</td>`;
+    (v?sub(pct(base?v/base:0,1)):'') + `</td>`;
   const rows = order.map(c=>{
     const v=C.alloc[c]||0, share=v/total;
     return `<tr><td><i style="display:inline-block;width:11px;height:11px;border-radius:3px;border:1px solid rgba(255,255,255,.22);background:${CLS_COLOR[c]||'#6E7A8C'};margin-right:8px;vertical-align:-1px"></i>${esc(c)}</td>
       <td class="num">${won(v)}</td><td class="num">${pct(share,2)}</td>
-      ${cell(C.allocInv[c]||0, totInv)}${cell(C.allocPen[c]||0, totPen)}</tr>`;
+      ${grpCols.map(([,m],i)=>cell(m[c]||0, gTot[i])).join('')}</tr>`;
   }).join('');
   $('#tAlloc').innerHTML =
-    `<thead><tr><th>자산군</th><th>평가액</th><th>현재 비중</th><th>투자 계좌</th><th>연금 계좌</th></tr></thead>
+    `<thead><tr><th>자산군</th><th>평가액</th><th>현재 비중</th>${grpCols.map(([t])=>`<th>${t}</th>`).join('')}</tr></thead>
      <tbody>${rows}</tbody>
      <tfoot><tr><td>합계</td><td class="num">${won(total)}</td><td class="num">100.00%</td>
-       <td class="num">${won(totInv)}<em class="mut" style="font-style:normal;display:block;font-size:11.5px">전체의 ${pct(total?totInv/total:0,1)}</em></td>
-       <td class="num">${won(totPen)}<em class="mut" style="font-style:normal;display:block;font-size:11.5px">전체의 ${pct(total?totPen/total:0,1)}</em></td></tr></tfoot>`;
+       ${gTot.map(v=>`<td class="num">${won(v)}${sub('전체의 '+pct(total?v/total:0,1))}</td>`).join('')}</tr></tfoot>`;
 
   /* 기여도 */
   const srt = C.items.filter(i=>i.cost>0).sort((a,b)=>b.profit-a.profit);
@@ -788,11 +829,26 @@ function statusDot(h, ai, hi){
 }
 
 function renderHold(C){
+  renderPanels(C, '#acctPanels', a=>a.grp!=='가상자산');
+  renderPanels(C, '#coinPanels', a=>a.grp==='가상자산');
+}
+
+/* 계좌 패널을 그립니다. 보유종목 탭과 가상화폐 탭이 같은 코드를 씁니다. */
+function renderPanels(C, sel, keep){
+  const root = $(sel); if(!root) return;
   const clsOpts = h => ASSET_CLASSES.map(c=>`<option ${c===h.a?'selected':''}>${c}</option>`).join('');
-  $('#acctPanels').innerHTML = S.accounts.map((a,ai)=>{
+  const list = S.accounts.map((a,ai)=>({a,ai})).filter(x=>keep(x.a));
+  if(!list.length){
+    root.innerHTML = `<div class="panel"><div class="pb" style="text-align:center;color:var(--tx2);padding:26px">
+      ${sel==='#coinPanels' ? '아직 등록한 거래소·지갑이 없습니다. 위의 <b>+ 거래소·지갑 추가</b>를 눌러주세요.'
+                            : '계좌가 없습니다. 위의 <b>+ 계좌 추가</b>를 눌러주세요.'}</div></div>`;
+    return;
+  }
+  root.innerHTML = list.map(({a,ai})=>{
     const A = C.accts[ai];
     const cur = a.cur==='USD';
-    const F = fmts(cur);
+    const coin = a.grp==='가상자산';
+    const F = fmts(cur, coin);
     let sc=0, sv=0;
     const rows = a.h.map((h,hi)=>{
       const v = holdValue(h), b=+h.b||0, pf=v-b;
@@ -837,9 +893,9 @@ function renderHold(C){
         </tfoot>
       </table></div>
       <div class="pb" style="padding:9px 13px;border-top:1px solid var(--line)">
-        <button class="btn sm" data-add="${ai}">+ 종목 추가</button>
-        <button class="btn sm" data-acctedit="${ai}">계좌 설정</button>
-        <button class="btn sm dgr" data-acctdel="${ai}">계좌 삭제</button>
+        <button class="btn sm" data-add="${ai}">+ ${coin?'코인':'종목'} 추가</button>
+        <button class="btn sm" data-acctedit="${ai}">${coin?'거래소':'계좌'} 설정</button>
+        <button class="btn sm dgr" data-acctdel="${ai}">${coin?'거래소':'계좌'} 삭제</button>
       </div>
     </div>`;
   }).join('');
@@ -849,8 +905,9 @@ function renderHold(C){
    → 화면을 통째로 다시 만들지 않으므로 Tab 이동과 포커스가 끊기지 않습니다. */
 function refreshAcct(ai){
   const a = S.accounts[ai]; if(!a) return;
-  const panel = document.querySelector(`#acctPanels .panel[data-ai="${ai}"]`); if(!panel) return;
-  const F = fmts(a.cur==='USD');
+  const panel = document.querySelector(`#acctPanels .panel[data-ai="${ai}"], #coinPanels .panel[data-ai="${ai}"]`);
+  if(!panel) return;
+  const F = fmts(a.cur==='USD', a.grp==='가상자산');
   const vals = a.h.map(holdValue);
   const sc = a.h.reduce((s,h)=>s+(+h.b||0),0);
   const sv = vals.reduce((s,v)=>s+v,0);
@@ -971,7 +1028,7 @@ function renameAcct(ai, name){
 
 /* 화면을 다시 만들지 않고 코드칸 값만 상태와 맞춥니다(포커스 유지). */
 function syncCodeInputs(){
-  document.querySelectorAll('#acctPanels tr[data-h]').forEach(tr=>{
+  document.querySelectorAll('#acctPanels tr[data-h], #coinPanels tr[data-h]').forEach(tr=>{
     const a=S.accounts[+tr.dataset.a]; if(!a) return;
     const h=a.h[+tr.dataset.h]; if(!h) return;
     const inp=tr.querySelector('[data-f="c"]');
@@ -981,7 +1038,21 @@ function syncCodeInputs(){
 
 /* 보유종목 입력 처리 (이벤트 위임) */
 function bindHold(){
-  const root = $('#acctPanels');
+  bindPanels('#acctPanels');
+  bindPanels('#coinPanels');
+}
+
+/* 화면에 보이는 계좌들만 자리를 바꿉니다.
+   가상화폐 탭에는 코인 계좌만 나오므로, 통째로 재정렬하면 나머지가 사라집니다. */
+function reorderAccounts(order){
+  const slots = order.slice().sort((x,y)=>x-y);
+  const out = S.accounts.slice();
+  slots.forEach((slot,i)=>{ out[slot] = S.accounts[order[i]]; });
+  S.accounts = out;
+}
+
+function bindPanels(sel){
+  const root = $(sel); if(!root) return;
 
   makeSortable(root, '.grip', 'tr[data-h]', 'tbody', cont=>{
     const trs = [...cont.querySelectorAll('tr[data-h]')];
@@ -991,9 +1062,9 @@ function bindHold(){
     markDirty(); renderAll();
   });
 
-  makeSortable(root, '.gripA', '.panel[data-ai]', '#acctPanels', cont=>{
+  makeSortable(root, '.gripA', '.panel[data-ai]', sel, cont=>{
     const ps = [...cont.querySelectorAll('.panel[data-ai]')];
-    S.accounts = reorder(S.accounts, ps.map(p=>+p.dataset.ai));
+    reorderAccounts(ps.map(p=>+p.dataset.ai));
     markDirty(); renderAll();
   });
 
@@ -1026,10 +1097,10 @@ function bindHold(){
         toast(`'${esc(v)}' 이름을 쓰는 계좌가 이미 있습니다. 리밸런싱에서 계좌를 고를 때 헷갈릴 수 있으니 다르게 지어주세요.`,'err',5600);
       debRender(); return; }
     if(t.dataset.cash!=null){ const a=S.accounts[+t.dataset.cash];
-      t.value = fmts(a.cur==='USD').cost(+a.cash||0); return; }
+      t.value = fmts(a.cur==='USD', a.grp==='가상자산').cost(+a.cash||0); return; }
     const f=t.dataset.f, tr=t.closest('tr'); if(!f||!tr) return;
     const a=S.accounts[+tr.dataset.a], h=a.h[+tr.dataset.h]; if(!h) return;
-    const F=fmts(a.cur==='USD');
+    const F=fmts(a.cur==='USD', a.grp==='가상자산');
     if(f==='q') t.value=F.qty(+h.q||0);
     if(f==='b') t.value=F.cost(+h.b||0);
     if(f==='p') t.value=F.price(+h.p||0);
@@ -1051,36 +1122,46 @@ function bindHold(){
     if(b.dataset.del){ const [ai,hi]=b.dataset.del.split(',').map(Number);
       if(confirm(`'${S.accounts[ai].h[hi].n||'이름 없는 종목'}' 종목을 삭제할까요?`)){ S.accounts[ai].h.splice(hi,1); markDirty(); renderAll(); } }
     if(b.dataset.add!=null){ const ai=+b.dataset.add;
-      S.accounts[ai].h.push({n:'',c:'',a:'한국주식',q:0,b:0,m:false,v:0,p:0,ps:'',pn:'',pe:''});
+      const coin = S.accounts[ai].grp==='가상자산';
+      S.accounts[ai].h.push({n:'',c:'',a:coin?'가상화폐':'한국주식',q:0,b:0,m:false,v:0,p:0,ps:'',pn:'',pe:''});
       markDirty(); renderAll();
-      const el=document.querySelector(`#acctPanels tr[data-a="${ai}"][data-h="${S.accounts[ai].h.length-1}"] [data-f="n"]`);
+      const el=document.querySelector(`${sel} tr[data-a="${ai}"][data-h="${S.accounts[ai].h.length-1}"] [data-f="n"]`);
       if(el){ el.scrollIntoView({block:'center'}); el.focus(); }   // 바로 입력 가능
     }
     if(b.dataset.acctdel!=null){ const ai=+b.dataset.acctdel;
-      if(confirm(`'${S.accounts[ai].name}' 계좌를 통째로 삭제할까요?`)){ S.accounts.splice(ai,1); markDirty(); renderAll(); } }
+      const what = S.accounts[ai].grp==='가상자산' ? '거래소·지갑' : '계좌';
+      if(confirm(`'${S.accounts[ai].name}' ${what}를 통째로 삭제할까요?`)){ S.accounts.splice(ai,1); markDirty(); renderAll(); } }
     if(b.dataset.acctedit!=null) acctModal(+b.dataset.acctedit);
   });
 }
 let debT;
 function debRender(){ clearTimeout(debT); debT=setTimeout(()=>{ const C=compute(); renderDash(C); },260); }
 
-/* 계좌 설정 모달 */
-function acctModal(ai){
-  const a = ai>=0 ? S.accounts[ai] : { name:'새 계좌', cur:'KRW', grp:'투자', cash:0, h:[] };
-  modal(`${ai>=0?'계좌 설정':'계좌 추가'}`, `
-    <div class="fld"><label>계좌 이름</label><input id="m_name" value="${esc(a.name)}"></div>
+/* 계좌 설정 모달. grp='가상자산' 이면 거래소·지갑으로 다룹니다. */
+function acctModal(ai, newGrp){
+  const a = ai>=0 ? S.accounts[ai]
+    : { name: newGrp==='가상자산' ? '새 거래소' : '새 계좌',
+        cur:'KRW', grp:newGrp||'투자', cash:0, h:[] };
+  const coin = a.grp==='가상자산';
+  const what = coin ? '거래소·지갑' : '계좌';
+  modal(`${what} ${ai>=0?'설정':'추가'}`, `
+    <div class="fld"><label>${what} 이름</label><input id="m_name" value="${esc(a.name)}"></div>
     <div class="fld"><label>통화</label><select id="m_cur">
       <option value="KRW" ${a.cur==='KRW'?'selected':''}>KRW (원)</option>
       <option value="USD" ${a.cur==='USD'?'selected':''}>USD (달러 — 환율로 원화 환산)</option></select></div>
     <div class="fld"><label>구분</label><select id="m_grp">
       <option ${a.grp==='투자'?'selected':''}>투자</option>
-      <option ${a.grp==='연금'?'selected':''}>연금</option></select></div>`,
+      <option ${a.grp==='연금'?'selected':''}>연금</option>
+      <option ${coin?'selected':''}>가상자산</option></select>
+      <span class="hint">가상자산으로 두면 <b>가상화폐</b> 탭에 나옵니다.</span></div>`,
     ()=>{
       const name = $('#m_name').value.trim()||'이름 없음';
       if(ai>=0) renameAcct(ai, name); else a.name = name;
       a.cur=$('#m_cur').value; a.grp=$('#m_grp').value;
       if(ai<0) S.accounts.push(a);
-      markDirty(); renderAll(); return true;
+      markDirty(); renderAll();
+      if(ai<0) show(a.grp==='가상자산' ? 'coin' : 'hold');
+      return true;
     });
 }
 
@@ -1273,9 +1354,12 @@ function presetModal(){
 
 /* ═══════════ 종목코드 매칭 ═══════════ */
 function allHoldings(){
-  const out=[]; S.accounts.forEach((a,ai)=>a.h.forEach((h,hi)=>out.push({a:ai,i:hi,h,acct:a.name,cur:a.cur})));
+  const out=[]; S.accounts.forEach((a,ai)=>a.h.forEach((h,hi)=>
+    out.push({a:ai,i:hi,h,acct:a.name,cur:a.cur,grp:a.grp})));
   return out;
 }
+/* 이 종목을 어느 시장에서 찾아야 하는지 */
+function marketOf(x){ return x.grp==='가상자산' ? 'CRYPTO' : (x.cur==='USD' ? 'US' : 'KR'); }
 function baseName(n){ return String(n).replace(/_소수점$/,'').trim(); }
 
 /* 종목명이 같은 것끼리 한 줄로 묶습니다(예: AMD / AMD_소수점 → AMD 한 줄).
@@ -1326,9 +1410,10 @@ function applyToGroup(g, code, pn){
   g.rows.forEach(x=>{ x.h.c=code; if(pn) x.h.pn=pn; x.h.ps=''; x.h.pe=''; });
 }
 
-async function autoMatch(){
+async function autoMatch(only){
   if(!CFG.url) { toast('먼저 설정에서 서버를 연결해주세요.','err'); return; }
-  const gs = codeGroups().filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m));
+  const pick = g => (!only || marketOf(groupInfo(g))===only);
+  const gs = codeGroups().filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m) && pick(g));
   if(!gs.length){ toast('매칭할 종목이 없습니다.','ok'); return; }
   const t = toast(`<span class="spin"></span>종목 0/${gs.length} 매칭 중…`);
   for(let i=0;i<gs.length;i++){
@@ -1336,15 +1421,16 @@ async function autoMatch(){
     t.innerHTML = `<span class="spin"></span>종목 ${i+1}/${gs.length} — ${esc(key)}`;
     try{
       const r = await api('search',{ q:key });
-      const hit = (r.items||[]).filter(it=> x.cur==='USD' ? it.market==='US' : it.market==='KR' )[0];
+      const want = marketOf(x);
+      const hit = (r.items||[]).filter(it=> it.market===want )[0];
       if(hit) applyToGroup(g, hit.code, hit.name);
     }catch(e){ /* 개별 실패는 넘어감 */ }
   }
   t.remove();
   markDirty(); renderAll(); renderCodes();
-  const left = codeGroups().filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m)).length;
+  const left = codeGroups().filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m) && pick(g)).length;
   toast(`매칭 완료. 코드가 비어 있는 종목 ${left}개는 <b>검색</b> 버튼으로 직접 골라주세요.`, left?'':'ok', 5200);
-  show('cfg');
+  if(!only) show('cfg');
 }
 
 function bindCodes(){
@@ -1797,9 +1883,11 @@ function init(){
   $('#btnUpdate').onclick  = updatePrices;
   $('#btnSave').onclick    = saveDialog;
   $('#btnReload').onclick  = ()=>pullFromSheet(true,false);
-  $('#btnAddAcct').onclick = ()=>acctModal(-1);
-  $('#btnMatchAll').onclick  = autoMatch;
-  $('#btnMatchAll2').onclick = autoMatch;
+  $('#btnAddAcct').onclick   = ()=>acctModal(-1,'투자');
+  $('#btnAddWallet').onclick = ()=>acctModal(-1,'가상자산');
+  $('#btnMatchAll').onclick  = ()=>autoMatch();
+  $('#btnMatchAll2').onclick = ()=>autoMatch();
+  $('#btnMatchCoin').onclick = ()=>autoMatch('CRYPTO');
   S = normalize(S);
   bindHold(); bindReb(); bindCodes(); bindStat(); bindCfg();
   renderAll();

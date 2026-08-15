@@ -228,12 +228,20 @@ function num(x) {
 
 function isKrCode(c) { return /^\d{6}$/.test(String(c).trim()); }
 
+/** 업비트 마켓 코드인지 (KRW-BTC, BTC-ETH, USDT-SOL …) */
+function isCoinCode(c) {
+  return /^(KRW|BTC|USDT)-[A-Z0-9]{2,12}$/.test(String(c).trim().toUpperCase());
+}
+
 /* ================= 종목 검색 ================= */
 
 function searchSymbol(q) {
   q = String(q || '').trim();
   if (!q) return [];
   var out = [];
+
+  // 0순위: 가상화폐 (업비트). 앱이 market==='CRYPTO' 인 결과만 골라 씁니다.
+  try { out = out.concat(searchCoin(q)); } catch (e) {}
 
   // 1순위: 네이버 통합 자동완성
   try {
@@ -256,7 +264,7 @@ function searchSymbol(q) {
   } catch (e) {}
 
   // 2순위: 구형 자동완성 엔드포인트
-  if (!out.length) {
+  if (!out.filter(function (o) { return o.market !== 'CRYPTO'; }).length) {
     try {
       var u2 = 'https://ac.stock.naver.com/ac?q=' + encodeURIComponent(q) + '&target=stock,index';
       var j2 = JSON.parse(fetchText(u2, { 'Referer': 'https://finance.naver.com/' }));
@@ -294,9 +302,19 @@ function getQuotes(items) {
   var uniq = [];
   list.forEach(function (c) { if (c && uniq.indexOf(c) < 0) uniq.push(c); });
 
+  var coinCodes = uniq.filter(isCoinCode);
   var krCodes = uniq.filter(isKrCode);
-  var usCodes = uniq.filter(function (c) { return !isKrCode(c); });
+  var usCodes = uniq.filter(function (c) { return !isKrCode(c) && !isCoinCode(c); });
   var out = {}, errs = {};
+
+  // ── 가상화폐 (업비트 — 한 번에 여러 개) ──
+  if (coinCodes.length) {
+    var ct = quoteCoins(coinCodes);
+    coinCodes.forEach(function (c) {
+      var r = ct[c.toUpperCase()];
+      if (r) out[c] = r; else errs[c] = 'upbit: 이 마켓 코드를 찾지 못했습니다. KRW-BTC 형태여야 합니다.';
+    });
+  }
 
   // ── 해외 ──
   if (usCodes.length) {
@@ -386,6 +404,74 @@ function gfBatch(symbols) {
     });
   }
   return res;
+}
+
+/* ── 가상화폐: 업비트 공개 API ──
+   국내 서버라 stooq/yahoo 처럼 구글 IP 를 막지 않습니다. 인증도 필요 없습니다.
+   KRW- 마켓이면 값이 곧바로 원화라 환산이 필요 없습니다. */
+function quoteCoins(codes) {
+  var res = {};
+  var ups = codes.map(function (c) { return String(c).trim().toUpperCase(); });
+  try {
+    var url = 'https://api.upbit.com/v1/ticker?markets=' + encodeURIComponent(ups.join(','));
+    var arr = JSON.parse(fetchText(url, { 'Accept': 'application/json' }));
+    var names = coinNames_();
+    (arr || []).forEach(function (t) {
+      var p = num(t.trade_price);
+      if (isFinite(p) && p > 0) {
+        res[t.market] = { price: p, name: names[t.market] || t.market, src: 'upbit',
+                          prev: num(t.prev_closing_price), change: num(t.signed_change_rate) * 100 };
+      }
+    });
+  } catch (e) {
+    ups.forEach(function (c) { res[c] = null; });
+    throw new Error('upbit: ' + e.message);
+  }
+  return res;
+}
+
+/** 업비트 마켓 목록(코드 → 한글 이름). 응답이 커서 6시간 캐시합니다. */
+function coinMarkets_() {
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get('upbit_markets');
+  if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  var list = JSON.parse(fetchText('https://api.upbit.com/v1/market/all?isDetails=false',
+                                  { 'Accept': 'application/json' }));
+  var slim = (list || []).map(function (m) {
+    return { market: m.market, ko: m.korean_name || '', en: m.english_name || '' };
+  });
+  try { cache.put('upbit_markets', JSON.stringify(slim), 21600); } catch (e) {}
+  return slim;
+}
+function coinNames_() {
+  var map = {};
+  try { coinMarkets_().forEach(function (m) { map[m.market] = m.ko; }); } catch (e) {}
+  return map;
+}
+
+/** 코인 이름으로 마켓 코드를 찾습니다. '비트코인' → KRW-BTC */
+function searchCoin(q) {
+  var s = String(q || '').trim();
+  if (!s) return [];
+  var up = s.toUpperCase(), out = [];
+  var list;
+  try { list = coinMarkets_(); } catch (e) { return []; }
+
+  list.forEach(function (m) {
+    var score = -1;
+    if (m.market.toUpperCase() === up) score = 0;                       // KRW-BTC 를 그대로 넣은 경우
+    else if (m.ko === s || m.en.toUpperCase() === up) score = 1;        // 이름이 정확히 같음
+    else if (m.market.split('-')[1] === up) score = 2;                  // BTC 처럼 심볼만 넣은 경우
+    else if (m.ko.indexOf(s) >= 0 || m.en.toUpperCase().indexOf(up) >= 0) score = 3;
+    if (score < 0) return;
+    out.push({
+      code: m.market, name: m.ko + ' (' + m.market + ')', market: 'CRYPTO',
+      nation: m.market.split('-')[0], src: 'upbit',
+      _s: score + (m.market.indexOf('KRW-') === 0 ? 0 : 0.5)           // 원화 마켓을 앞에
+    });
+  });
+  out.sort(function (a, b) { return a._s - b._s; });
+  return out.slice(0, 12);
 }
 
 function quoteSheet() {
@@ -539,6 +625,12 @@ function diagnose() {
       return g;
     }],
     ['해외 시세 예비경로 (NVDA)',        function () { return quoteUS('NVDA'); }],
+    ['가상화폐 시세 (KRW-BTC)',          function () {
+      var r = quoteCoins(['KRW-BTC'])['KRW-BTC'];
+      if (!r) throw new Error('업비트에서 값을 못 받았습니다.');
+      return r;
+    }],
+    ['코인 이름 검색 (비트코인)',        function () { return { found: searchCoin('비트코인').length }; }],
     ['원/달러 환율',                     function () { return getFx(); }],
     ['종목 검색 (TIGER 200)',            function () { return { found: searchSymbol('TIGER 200').length }; }],
     ['시트 쓰기',                        function () { snapSheet(); return { sheet: openSS().getName() }; }]
@@ -554,7 +646,7 @@ function diagnose() {
  * 실행 후 왼쪽 '실행 기록' 또는 하단 로그에서 결과를 보세요.
  */
 function testQuotes() {
-  var samples = ['005930', '360750', 'AAPL', 'NVDA'];   // 삼성전자, TIGER 미국S&P500, 애플, 엔비디아
+  var samples = ['005930', '360750', 'AAPL', 'NVDA', 'KRW-BTC', 'KRW-ETH'];   // 국내·해외·가상화폐
   Logger.log('시세: ' + JSON.stringify(getQuotes(samples.map(function (c) { return { code: c }; })), null, 2));
   try { Logger.log('환율: ' + JSON.stringify(getFx())); }
   catch (e) { Logger.log('환율 실패: ' + e.message); }
