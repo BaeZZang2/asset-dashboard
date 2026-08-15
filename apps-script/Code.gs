@@ -117,6 +117,20 @@ function writeState(state) {
   sh.getRange(1, 1, rows.length, 1).setValues(rows);
 }
 
+/**
+ * 시점 키를 mmddyyyy 8자리로 맞춥니다.
+ * 시트가 '08162026' 을 숫자로 인식해 앞의 0 을 떼고 8162026 으로 돌려주기 때문에,
+ * 읽고 쓰는 모든 곳에서 이 함수를 거칩니다. 안 그러면 날짜가 한 자리씩 밀립니다.
+ */
+function padKey_(k) {
+  return String(k == null ? '' : k).replace(/\D/g, '').slice(-8);
+}
+function padKey8_(k) {
+  var s = padKey_(k);
+  while (s.length < 8) s = '0' + s;
+  return s;
+}
+
 function snapSheet() {
   var sh = sheet(SH_SNAP);
   if (sh.getLastRow() < 1) {
@@ -125,25 +139,33 @@ function snapSheet() {
     ]]);
     sh.setFrozenRows(1);
   }
+  // 시점 열은 항상 텍스트로 — 앞자리 0 이 사라지지 않게 합니다.
+  sh.getRange(1, 1, sh.getMaxRows(), 1).setNumberFormat('@');
   return sh;
 }
 
+/** 시트에 저장된 시점 키들을 8자리로 맞춰 읽어옵니다. */
+function snapKeys_(sh) {
+  if (sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, 1).getDisplayValues()
+           .map(function (r) { return padKey8_(r[0]); });
+}
+
 function putSnapshot(key, summary, state) {
-  if (!/^\d{8}$/.test(String(key || ''))) throw new Error('시점 키는 mmddyyyy 8자리여야 합니다.');
+  var k = padKey8_(key);
+  if (!/^\d{8}$/.test(k)) throw new Error('시점 키는 mmddyyyy 8자리여야 합니다.');
   var sh = snapSheet();
   var when = nowStr();
   var row = [
-    String(key), when,
+    k, when,
     summary.cost || 0, summary.value || 0, summary.profit || 0,
     summary.rate || 0, summary.fx || 0,
     JSON.stringify(summary || {}), JSON.stringify(state || {})
   ];
-  var keys = sh.getLastRow() > 1
-    ? sh.getRange(2, 1, sh.getLastRow() - 1, 1).getDisplayValues().map(function (r) { return String(r[0]); })
-    : [];
-  var idx = keys.indexOf(String(key));
-  if (idx >= 0) sh.getRange(idx + 2, 1, 1, 9).setValues([row]);   // 같은 날짜면 덮어쓰기
-  else          sh.appendRow(row);
+  var idx = snapKeys_(sh).indexOf(k);
+  var at  = idx >= 0 ? idx + 2 : sh.getLastRow() + 1;   // 같은 날짜면 덮어쓰기
+  sh.getRange(at, 1, 1, 9).setValues([row]);
+  sh.getRange(at, 1).setNumberFormat('@').setValue(k);  // 숫자로 바뀌지 않게 다시 못 박습니다
   return when;
 }
 
@@ -156,7 +178,7 @@ function listSnapshots() {
     var sum = {};
     try { sum = JSON.parse(v[i][7] || '{}'); } catch (e) {}
     return {
-      key: String(r[0]), savedAt: r[1],
+      key: padKey8_(r[0]), savedAt: r[1],
       cost: Number(raw[i][0]) || 0, value: Number(raw[i][1]) || 0,
       profit: Number(raw[i][2]) || 0, rate: Number(raw[i][3]) || 0,
       fx: Number(raw[i][4]) || 0, summary: sum
@@ -164,23 +186,24 @@ function listSnapshots() {
   }).sort(function (a, b) { return sortKey(a.key) - sortKey(b.key); });
 }
 
-function sortKey(k) { return Number(k.substr(4, 4) + k.substr(0, 2) + k.substr(2, 2)); }
+function sortKey(k) {
+  var s = padKey8_(k);
+  return Number(s.substr(4, 4) + s.substr(0, 2) + s.substr(2, 2));
+}
 
 function getSnapshot(key) {
   var sh = snapSheet();
   if (sh.getLastRow() < 2) return null;
-  var v = sh.getRange(2, 1, sh.getLastRow() - 1, 9).getDisplayValues();
-  for (var i = 0; i < v.length; i++) {
-    if (String(v[i][0]) === String(key)) { try { return JSON.parse(v[i][8]); } catch (e) { return null; } }
-  }
-  return null;
+  var idx = snapKeys_(sh).indexOf(padKey8_(key));
+  if (idx < 0) return null;
+  var cell = sh.getRange(idx + 2, 9).getDisplayValue();
+  try { return JSON.parse(cell); } catch (e) { return null; }
 }
 
 function delSnapshot(key) {
   var sh = snapSheet();
-  if (sh.getLastRow() < 2) return;
-  var v = sh.getRange(2, 1, sh.getLastRow() - 1, 1).getDisplayValues();
-  for (var i = v.length - 1; i >= 0; i--) if (String(v[i][0]) === String(key)) sh.deleteRow(i + 2);
+  var keys = snapKeys_(sh), k = padKey8_(key);
+  for (var i = keys.length - 1; i >= 0; i--) if (keys[i] === k) sh.deleteRow(i + 2);
 }
 
 /* ================= 외부 조회 공통 ================= */

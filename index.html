@@ -462,7 +462,7 @@ const LS = {
 let CFG = LS.get('ad.cfg', { url:'', secret:'', auto:true });
 if(CFG.auto===undefined) CFG.auto = true;
 let S   = LS.get('ad.state', null) || seedState();
-let SNAPS = LS.get('ad.snaps', []);
+let SNAPS = LS.get('ad.snaps', []);   // 키는 normSnaps 로 8자리를 보장합니다
 let dirty = false;
 
 /* ─────────── 기기 간 자동 동기화 ───────────
@@ -581,10 +581,18 @@ function todayKey(){
   const d=new Date(), p=x=>String(x).padStart(2,'0');
   return p(d.getMonth()+1)+p(d.getDate())+d.getFullYear();
 }
+/* 시점 키는 mmddyyyy 8자리입니다. 구글 시트가 08162026 을 숫자로 인식해
+   앞의 0 을 떼어 8162026 으로 돌려주는 일이 있어, 쓸 때마다 8자리로 채웁니다. */
+function padKey(k){ return String(k==null?'':k).replace(/\D/g,'').padStart(8,'0').slice(-8); }
 function keyToDate(k){
-  return new Date(+k.substr(4,4), +k.substr(0,2)-1, +k.substr(2,2));
+  const s = padKey(k);
+  return new Date(+s.substr(4,4), +s.substr(0,2)-1, +s.substr(2,2));
 }
-function keyLabel(k){ return k.substr(4,4)+'-'+k.substr(0,2)+'-'+k.substr(2,2); }
+function keyLabel(k){ const s=padKey(k); return s.substr(4,4)+'-'+s.substr(0,2)+'-'+s.substr(2,2); }
+/* 서버에서 받은 기록의 키를 8자리로 맞춥니다. */
+function normSnaps(list){
+  return (Array.isArray(list)?list:[]).map(x=>Object.assign({}, x, { key: padKey(x && x.key) }));
+}
 function seasonPreset(){
   const m = new Date().getMonth()+1;
   return (m>=11||m<=4) ? '올웨더 11~4월' : '올웨더 5~10월';
@@ -1456,7 +1464,7 @@ async function doSave(withSnap, key){
   try{
     if(withSnap){
       const r = await api('snapshot',{ key, summary:summaryOf(compute()), state:S });
-      SNAPS = r.snapshots; LS.set('ad.snaps',SNAPS); renderStat();
+      SNAPS = normSnaps(r.snapshots); LS.set('ad.snaps',SNAPS); renderStat();
     }
     t.remove(); toast('저장했습니다.'+(withSnap?` 시점 ${keyLabel(key)} 기록 완료.`:''),'ok');
   }catch(e){ t.remove(); toast('시점 기록 실패: '+e.message,'err',6000); }
@@ -1487,7 +1495,7 @@ async function pushToSheet(auto){
 
     baseRev = S.rev; dirty = false; persist();
     synced = true; LS.set('ad.synced', true);
-    SNAPS = cur.snapshots || SNAPS; LS.set('ad.snaps', SNAPS);
+    SNAPS = cur.snapshots ? normSnaps(cur.snapshots) : SNAPS; LS.set('ad.snaps', SNAPS);
     syncing = false; setSync('저장됨 · ' + new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}));
     return true;
   }catch(e){
@@ -1506,7 +1514,7 @@ async function pullFromSheet(force, silent){
   const t = silent ? null : toast('<span class="spin"></span>불러오는 중…','',30000);
   try{
     const r = await api('load');
-    SNAPS = r.snapshots||[]; LS.set('ad.snaps',SNAPS);
+    SNAPS = normSnaps(r.snapshots); LS.set('ad.snaps',SNAPS);
     const srv = (r.state && r.state.accounts) ? r.state : null;
     const srvRev = srv ? (+srv.rev||0) : 0;
 
@@ -1568,7 +1576,7 @@ function conflictModal(srv, snaps){
   };
   m.querySelector('#cfTakeSrv').onclick = ()=>{
     S = normalize(srv); baseRev = +S.rev||0; dirty=false; persist();
-    SNAPS = snaps||SNAPS; LS.set('ad.snaps',SNAPS);
+    SNAPS = snaps ? normSnaps(snaps) : SNAPS; LS.set('ad.snaps',SNAPS);
     m.remove(); setSync('시트 내용으로 맞춤'); renderAll();
     toast('시트 내용으로 맞췄습니다.','ok');
   };
@@ -1699,7 +1707,7 @@ function bindStat(){
         else toast('그 시점의 상세 내용이 없습니다.','err');
       }catch(err){ toast(err.message,'err'); } }
     if(d){ if(!confirm(`${keyLabel(d.dataset.snapdel)} 기록을 삭제할까요?`)) return;
-      try{ const r=await api('delSnap',{key:d.dataset.snapdel}); SNAPS=r.snapshots; LS.set('ad.snaps',SNAPS);
+      try{ const r=await api('delSnap',{key:d.dataset.snapdel}); SNAPS=normSnaps(r.snapshots); LS.set('ad.snaps',SNAPS);
         renderStat(); toast('삭제했습니다.','ok'); }catch(err){ toast(err.message,'err'); } }
   });
 }
