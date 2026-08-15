@@ -103,7 +103,7 @@ main{padding:14px;max-width:1180px;margin:0 auto}
 .ph{display:flex;align-items:center;gap:8px;padding:11px 13px;border-bottom:1px solid var(--line);background:var(--panel2)}
 .ph h3{margin:0;font-size:15px;font-weight:700;letter-spacing:-.02em}
 /* 계좌 이름 — 제목처럼 보이지만 바로 고칠 수 있는 칸 */
-.acctname{flex:0 1 auto;min-width:110px;max-width:320px;font-size:15px;font-weight:700;letter-spacing:-.02em;
+.acctname{flex:0 1 auto;min-width:170px;max-width:440px;font-size:15px;font-weight:700;letter-spacing:-.02em;
   background:transparent;border:1px solid transparent;border-radius:6px;padding:3px 7px;color:var(--tx)}
 .acctname:hover{border-color:var(--line2)}
 .acctname:focus{border-color:var(--gold);background:var(--bg);outline:none}
@@ -810,7 +810,7 @@ function renderHold(C){
       <div class="ph">
         <span class="gripA" title="끌어서 계좌 순서 바꾸기">⠿</span>
         <input class="acctname" data-acct="${ai}" value="${esc(a.name)}" placeholder="계좌 이름"
-               title="눌러서 계좌 이름을 고칠 수 있습니다" style="width:${Math.max(9,(a.name||'').length+2)}ch">
+               title="눌러서 계좌 이름을 고칠 수 있습니다" style="width:${acctNameW(a.name)}ch">
         <span class="tag">${esc(a.grp)}</span><span class="tag">${esc(a.cur)}</span>
         <span class="sp num h-pf ${sgn(A.profit)}">${signed(A.profit,won)} · ${signed(A.ret,x=>pct(x,2))}</span>
       </div>
@@ -944,6 +944,13 @@ function pullByName(dst){
   return true;
 }
 
+/* 계좌 이름칸의 너비(ch). ch 는 숫자 '0' 기준이라 한글은 두 칸으로 셉니다. */
+function acctNameW(s){
+  let u = 0;
+  for(const ch of String(s||'')) u += /[ᄀ-ᇿ㄰-㆏가-힯一-鿿぀-ヿ]/.test(ch) ? 2 : 1;
+  return Math.max(16, u + 4);
+}
+
 /* 계좌 이름 바꾸기. 리밸런싱은 계좌를 '이름'으로 기억하므로 같이 옮겨 줍니다. */
 function renameAcct(ai, name){
   const a = S.accounts[ai]; if(!a) return '';
@@ -985,7 +992,7 @@ function bindHold(){
   root.addEventListener('input', e=>{
     const t=e.target;
     if(t.dataset.acct!=null){ renameAcct(+t.dataset.acct, t.value);
-      t.style.width = Math.max(9, t.value.length+2)+'ch'; debRender(); return; }
+      t.style.width = acctNameW(t.value)+'ch'; debRender(); return; }
     if(t.dataset.cash!=null){ const ai=+t.dataset.cash;
       S.accounts[ai].cash = num(t.value); markDirty(); refreshAcct(ai); debRender(); return; }
     const tr=t.closest('tr'); if(!tr||!t.dataset.f) return;
@@ -1006,7 +1013,7 @@ function bindHold(){
     const t=e.target;
     if(t.dataset.acct!=null){ const ai=+t.dataset.acct;
       const v = renameAcct(ai, t.value.trim() || '이름 없음');
-      t.value = v; t.style.width = Math.max(9, v.length+2)+'ch';
+      t.value = v; t.style.width = acctNameW(v)+'ch';
       if(S.accounts.some((x,i)=>i!==ai && x.name===v))
         toast(`'${esc(v)}' 이름을 쓰는 계좌가 이미 있습니다. 리밸런싱에서 계좌를 고를 때 헷갈릴 수 있으니 다르게 지어주세요.`,'err',5600);
       debRender(); return; }
