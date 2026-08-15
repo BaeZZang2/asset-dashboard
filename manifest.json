@@ -1,0 +1,17 @@
+{
+  "name": "자산 대시보드",
+  "short_name": "자산",
+  "description": "보유 종목 시세를 불러와 평가액·수익률·리밸런싱을 계산합니다.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0E1219",
+  "theme_color": "#0E1219",
+  "lang": "ko",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
