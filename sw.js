@@ -1,6 +1,6 @@
-/* 자산 대시보드 서비스 워커 — AI(Claude) 작성 */
-const CACHE = 'asset-dash-v1';
-const SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png',
+/* 자산지기 서비스 워커 — AI(Claude) 작성 */
+const CACHE = 'asset-keeper-v2';
+const SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './icon-512-maskable.png',
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js',
   'https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css'];
 

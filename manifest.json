@@ -1,7 +1,7 @@
 {
-  "name": "자산 대시보드",
-  "short_name": "자산",
-  "description": "보유 종목 시세를 불러와 평가액·수익률·리밸런싱을 계산합니다.",
+  "name": "자산지기",
+  "short_name": "자산지기",
+  "description": "보유 종목 시세를 불러와 평가액·수익률·리밸런싱을 계산하는 개인 자산 관리 앱입니다.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
