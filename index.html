@@ -52,7 +52,7 @@ nav::-webkit-scrollbar{display:none}
 nav button{padding:9px 13px;font-size:14.5px;font-weight:600;color:var(--tx2);border-bottom:2px solid transparent;white-space:nowrap}
 nav button.on{color:var(--gold);border-bottom-color:var(--gold)}
 
-main{padding:14px;max-width:min(1800px,97vw);margin:0 auto}
+main{padding:14px;max-width:1180px;margin:0 auto}
 .view{display:none}.view.on{display:block}
 
 /* ── 총자산 스트립 (시그니처) ── */
@@ -73,10 +73,7 @@ main{padding:14px;max-width:min(1800px,97vw);margin:0 auto}
 
 /* 비중 바 */
 .allocbar{margin-top:14px}
-.allocbar .barrow{display:flex;align-items:center;gap:9px;margin-bottom:4px}
-.allocbar .blbl{flex:0 0 auto;width:28px;font-size:12px;font-weight:600;color:var(--tx2)}
-.allocbar .track{flex:1;display:flex;height:30px;border-radius:6px;overflow:hidden;background:var(--panel2);position:relative}
-.allocbar .track.tgt{height:15px;opacity:.62}
+.allocbar .track{display:flex;height:30px;border-radius:6px;overflow:hidden;background:var(--panel2);position:relative}
 .allocbar .seg{position:relative;min-width:2px;transition:width .35s ease;box-shadow:inset -1.5px 0 0 rgba(14,18,25,.9)}
 .allocbar .seg:last-child{box-shadow:none}
 .allocbar .legend{display:flex;flex-wrap:wrap;gap:5px 14px;margin-top:11px;font-size:13px;color:var(--tx2)}
@@ -233,10 +230,8 @@ body.dragging{user-select:none;-webkit-user-select:none}
       <div><span>기준환율 USD/KRW</span><b class="num" id="hFx">—</b></div>
     </div>
     <div class="allocbar">
-      <div class="barrow"><span class="blbl">현재</span><div class="track" id="allocTrack"></div></div>
-      <div class="barrow"><span class="blbl">목표</span><div class="track tgt" id="allocTarget"></div></div>
+      <div class="track" id="allocTrack"></div>
       <div class="legend" id="allocLegend"></div>
-      <div class="hint" style="margin-top:7px">아래쪽 옅은 막대가 선택한 목표 배분(<span id="allocPresetName">—</span>)입니다. 위아래 색 경계가 어긋난 만큼 목표에서 벗어나 있습니다.</div>
     </div>
   </div>
 
@@ -645,27 +640,21 @@ function renderDash(C){
                             (S.fx.src?` <span class="mut" style="font-size:10px">${esc(S.fx.src)}</span>`:'');
   $('#updAt').textContent = S.updatedAt ? '시세 기준 '+S.updatedAt : '아직 시세를 불러오지 않았습니다';
 
-  /* 비중 바 + 목표 눈금 */
-  const preset = S.presets.find(x=>x.name===S.activePreset) || S.presets[0];
-  $('#allocPresetName').textContent = preset ? preset.name : '없음';
+  /* 비중 바 — 보유 종목이 있는 자산군은 평가액이 0이어도(시세 미조회 등) 목록에서 빠지지 않습니다. */
   const total = Object.values(C.alloc).reduce((a,b)=>a+b,0) || 1;
-  const tw = preset ? Object.values(preset.w).reduce((a,b)=>a+b,0) : 0;
-  const tgtOf = c => (preset && preset.w[c]) ? preset.w[c]/(tw||100) : 0;
-  const order = ASSET_CLASSES.filter(c=>C.alloc[c]>0);
-  let track='', tgtTrack='', legend='';
-  ASSET_CLASSES.forEach(c=>{                       // 목표 막대는 목표가 있는 자산군만
-    const t = tgtOf(c); if(!t) return;
-    tgtTrack += `<div class="seg" style="width:${(t*100).toFixed(3)}%;background:${CLS_COLOR[c]||'#6E7A8C'}" title="목표 ${esc(c)} ${pct(t,1)}"></div>`;
+  const held = {};
+  S.accounts.forEach(a=>{
+    a.h.forEach(h=>{ held[h.a||'기타주식'] = 1; });
+    if(+a.cash) held['현금'] = 1;
   });
+  const order = ASSET_CLASSES.filter(c=> C.alloc[c]>0 || held[c]);
+  let track='', legend='';
   order.forEach(c=>{
-    const share = C.alloc[c]/total, t = tgtOf(c);
-    track += `<div class="seg" style="width:${(share*100).toFixed(3)}%;background:${CLS_COLOR[c]||'#6E7A8C'}" title="${esc(c)} ${pct(share,1)}"></div>`;
-    const gap = t ? share-t : null;
-    legend += `<span><i style="background:${CLS_COLOR[c]||'#6E7A8C'}"></i>${esc(c)} <b class="num">${pct(share,1)}</b>` +
-              (gap!=null?` <em class="num ${Math.abs(gap)<0.01?'flat':(gap>0?'up':'down')}" style="font-style:normal">${signed(gap,x=>pct(x,1))}</em>`:'') + `</span>`;
+    const share = (C.alloc[c]||0)/total;
+    if(share>0) track += `<div class="seg" style="width:${(share*100).toFixed(3)}%;background:${CLS_COLOR[c]||'#6E7A8C'}" title="${esc(c)} ${pct(share,1)}"></div>`;
+    legend += `<span><i style="background:${CLS_COLOR[c]||'#6E7A8C'}"></i>${esc(c)} <b class="num${share>0?'':' mut'}">${pct(share,1)}</b></span>`;
   });
   $('#allocTrack').innerHTML  = track;
-  $('#allocTarget').innerHTML = tgtTrack;
   $('#allocLegend').innerHTML = legend;
 
   /* 계좌 카드 */
@@ -684,7 +673,7 @@ function renderDash(C){
   const cell = (v,base)=>`<td class="num">${v?won(v):'<span class="mut">—</span>'}` +
     (v?`<em class="mut" style="font-style:normal;display:block;font-size:11.5px">${pct(base?v/base:0,1)}</em>`:'') + `</td>`;
   const rows = order.map(c=>{
-    const v=C.alloc[c], share=v/total;
+    const v=C.alloc[c]||0, share=v/total;
     return `<tr><td><i style="display:inline-block;width:11px;height:11px;border-radius:3px;border:1px solid rgba(255,255,255,.22);background:${CLS_COLOR[c]||'#6E7A8C'};margin-right:8px;vertical-align:-1px"></i>${esc(c)}</td>
       <td class="num">${won(v)}</td><td class="num">${pct(share,2)}</td>
       ${cell(C.allocInv[c]||0, totInv)}${cell(C.allocPen[c]||0, totPen)}</tr>`;
@@ -1147,7 +1136,7 @@ function presetModal(){
     <div class="fld"><label>이름</label><input id="pmName"></div>
     <div id="pmRows" style="margin:8px 0"></div>
     <div id="pmSum" style="text-align:right;font-size:12.5px;margin-top:6px"></div>
-    <div class="hint" style="margin-top:8px">여기서 만든 배분은 리밸런싱 화면과 대시보드의 목표 눈금에 함께 쓰입니다.</div>`,
+    <div class="hint" style="margin-top:8px">여기서 만든 배분은 리밸런싱 화면에서 쓰입니다.</div>`,
     ()=>{
       const name=$('#pmName').value.trim(); if(!name){ toast('이름을 넣어주세요.','err'); return false; }
       S.presets[idx] = { name, w:collect() };
