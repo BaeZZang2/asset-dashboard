@@ -146,6 +146,19 @@ td select{text-align:left}
 .mgrid span{display:block;font-size:11px;color:var(--tx2);margin-bottom:3px}
 .mgrid b{font-size:17px;font-weight:700;letter-spacing:-.02em}
 .mgrid em{font-style:normal;display:block;font-size:10.5px;color:var(--tx2);margin-top:2px}
+/* ── 순서 바꾸기 ── */
+.grip,.gripA{
+  cursor:grab; color:var(--tx2); user-select:none; touch-action:none;
+  font-size:12px; letter-spacing:-2px; line-height:1; flex:0 0 auto;
+  padding:4px 3px; border-radius:4px;
+}
+.grip:hover,.gripA:hover{color:var(--gold);background:var(--panel2)}
+.grip:active,.gripA:active{cursor:grabbing}
+.gripA{padding:4px 6px;letter-spacing:-1px;font-size:13px}
+.cellflex{display:flex;align-items:center;gap:3px}
+tr.dragging td{opacity:.45;background:var(--panel2)!important}
+.panel.dragging{opacity:.5;outline:1px dashed var(--gold);outline-offset:-1px}
+tr.dropline td{box-shadow:inset 0 2px 0 var(--gold)}
 @media(max-width:600px){main{padding:11px}.pb{padding:11px}}
 </style>
 </head>
@@ -213,7 +226,7 @@ td select{text-align:left}
     <div class="row">
       <button class="btn" id="btnAddAcct">+ 계좌 추가</button>
       <button class="btn" id="btnMatchAll">종목코드 자동매칭</button>
-      <span class="hint" style="flex:1;min-width:200px">매입량과 매입금액만 넣으면 평가금액·수익률은 자동 계산됩니다. 코드가 없거나 조회되지 않는 종목은 <b>수동</b>으로 바꿔 평가금액을 직접 넣으세요.</span>
+      <span class="hint" style="flex:1;min-width:200px">매입량과 매입금액만 넣으면 평가금액·수익률은 자동 계산됩니다. 코드가 없거나 조회되지 않는 종목은 <b>수동</b>으로 바꿔 평가금액을 직접 넣으세요. 왼쪽 <b>⣿</b> 손잡이를 끌면 종목·계좌 순서를 바꿀 수 있습니다.</span>
     </div>
   </div></div>
   <div id="acctPanels"></div>
@@ -584,7 +597,7 @@ function renderHold(C){
       const avg = h.q ? b/h.q : 0;
       const share = A.valLoc? v/A.valLoc : 0;
       return `<tr data-a="${ai}" data-h="${hi}">
-        <td><input class="nameinp" data-f="n" value="${esc(h.n)}"></td>
+        <td><div class="cellflex"><span class="grip" title="끌어서 순서 바꾸기">⣿</span><input class="nameinp" data-f="n" value="${esc(h.n)}"></div></td>
         <td><input data-f="c" value="${esc(h.c)}" placeholder="코드" style="text-align:left;width:82px">
             ${h.ps?`<span class="tag ok" title="${esc(h.pn||'')}">${esc(h.ps)}</span>`:''}</td>
         <td><select data-f="a">${clsOpts(h)}</select></td>
@@ -600,8 +613,9 @@ function renderHold(C){
         <td><button class="xbtn" data-del="${ai},${hi}">×</button></td>
       </tr>`;
     }).join('');
-    return `<div class="panel">
+    return `<div class="panel" data-ai="${ai}">
       <div class="ph">
+        <span class="gripA" title="끌어서 계좌 순서 바꾸기">⣿</span>
         <h3>${esc(a.name)}</h3>
         <span class="tag">${esc(a.grp)}</span><span class="tag">${esc(a.cur)}</span>
         <span class="sp num ${sgn(A.profit)}">${signed(A.profit,won)} · ${signed(A.ret,x=>pct(x,2))}</span>
@@ -629,9 +643,58 @@ function renderHold(C){
   }).join('');
 }
 
+/* 끌어서 순서 바꾸기 (마우스·터치 공통) */
+function makeSortable(root, gripSel, itemSel, contSel, onDrop){
+  let drag = null;
+  root.addEventListener('pointerdown', e=>{
+    const g = e.target.closest(gripSel); if(!g) return;
+    const item = g.closest(itemSel); if(!item) return;
+    e.preventDefault();
+    drag = { item, cont: item.closest(contSel), moved:false };
+    item.classList.add('dragging');
+    try{ g.setPointerCapture(e.pointerId); }catch(err){}
+  });
+  root.addEventListener('pointermove', e=>{
+    if(!drag) return;
+    e.preventDefault();
+    const el = document.elementFromPoint(e.clientX, e.clientY); if(!el) return;
+    const over = el.closest(itemSel);
+    if(!over || over === drag.item || over.closest(contSel) !== drag.cont) return;
+    const r = over.getBoundingClientRect();
+    drag.cont.insertBefore(drag.item, (e.clientY > r.top + r.height/2) ? over.nextSibling : over);
+    drag.moved = true;
+  });
+  const end = ()=>{
+    if(!drag) return;
+    drag.item.classList.remove('dragging');
+    const d = drag; drag = null;
+    if(d.moved) onDrop(d.cont);
+  };
+  root.addEventListener('pointerup', end);
+  root.addEventListener('pointercancel', end);
+  root.addEventListener('lostpointercapture', end);
+}
+
+function reorder(arr, order){ return order.map(i=>arr[i]); }
+
 /* 보유종목 입력 처리 (이벤트 위임) */
 function bindHold(){
   const root = $('#acctPanels');
+
+  makeSortable(root, '.grip', 'tr[data-h]', 'tbody', cont=>{
+    const trs = [...cont.querySelectorAll('tr[data-h]')];
+    if(!trs.length) return;
+    const ai = +trs[0].dataset.a;
+    S.accounts[ai].h = reorder(S.accounts[ai].h, trs.map(t=>+t.dataset.h));
+    markDirty(); renderAll();
+  });
+
+  makeSortable(root, '.gripA', '.panel[data-ai]', '#acctPanels', cont=>{
+    const ps = [...cont.querySelectorAll('.panel[data-ai]')];
+    S.accounts = reorder(S.accounts, ps.map(p=>+p.dataset.ai));
+    markDirty(); renderAll();
+  });
+
   root.addEventListener('input', e=>{
     const t=e.target;
     if(t.dataset.cash!=null){ S.accounts[+t.dataset.cash].cash = parseFloat(t.value)||0; markDirty(); debRender(); return; }
