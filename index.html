@@ -111,7 +111,7 @@ main{padding:14px;max-width:1180px;margin:0 auto}
 /* ── 표 ── */
 .tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;width:100%;font-size:13.8px;min-width:940px}
-th,td{padding:8px 9px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+th,td{padding:8px 7px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
 th{background:var(--panel2);color:var(--tx2);font-weight:600;font-size:12.5px;position:sticky;top:0;z-index:1;
    text-align:center}                                   /* 열 이름만 가운데 정렬 */
 th:first-child,td:first-child{position:sticky;left:0;background:var(--panel);z-index:2}
@@ -123,7 +123,7 @@ tfoot td{font-weight:700;background:var(--panel2);border-top:1px solid var(--lin
 td input,td select{background:transparent;border:1px solid transparent;border-radius:5px;padding:4px 6px;width:100%;text-align:right;font-size:13.8px}
 td input:hover,td select:hover{border-color:var(--line2)}
 td input:focus,td select:focus{border-color:var(--gold);background:var(--bg);outline:none}
-td input.nameinp,td:first-child input{text-align:left;min-width:215px}
+td input.nameinp,td:first-child input{text-align:left;min-width:178px}
 /* 숫자 칸이 잘리지 않게 최소 폭 확보 */
 td input[data-f="q"]{min-width:86px}
 td input[data-f="b"],td input[data-f="v"],td input[data-cash]{min-width:118px}
@@ -131,7 +131,7 @@ td input[data-f="p"]{min-width:96px}
 td select{text-align:left}
 /* 자산군 드롭다운 — 글씨가 잘리지 않게 */
 td select.clssel{
-  min-width:126px; width:126px; padding-right:24px; text-overflow:clip;
+  min-width:112px; width:112px; padding-right:22px; text-overflow:clip;
   -webkit-appearance:none; -moz-appearance:none; appearance:none;
   background-image:linear-gradient(45deg,transparent 50%,var(--tx2) 50%),linear-gradient(135deg,var(--tx2) 50%,transparent 50%);
   background-position:calc(100% - 13px) calc(50% + 1px),calc(100% - 8px) calc(50% + 1px);
@@ -145,6 +145,16 @@ td select.clssel option{background:var(--panel);color:var(--tx)}
 .tag.no{color:var(--up);border-color:#4A2B29}
 .xbtn{color:var(--tx2);padding:2px 6px;border-radius:5px;font-size:15px;line-height:1}
 .xbtn:hover{color:var(--up);background:var(--panel2)}
+/* 시세 조회 상태 점 (코드 열을 대신합니다) */
+.sdot{flex:0 0 auto;width:10px;height:10px;border-radius:50%;padding:0;display:block;
+  border:1px solid rgba(255,255,255,.25);cursor:pointer}
+.sdot:hover{transform:scale(1.35)}
+.sdot.ok{background:#3FBF7F}                      /* 조회됨 */
+.sdot.fail{background:var(--up)}                  /* 조회 실패 */
+.sdot.none{background:#E8B93C}                    /* 코드 없음 */
+.sdot.man{background:transparent;border-color:var(--tx2);border-style:dashed}  /* 수동 */
+/* 수익액 + 수익률 한 칸 */
+td.pfcell em{font-style:normal;display:block;font-size:11.5px;line-height:1.25}
 
 /* ── 폼 ── */
 .fld{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
@@ -275,7 +285,14 @@ body.dragging{user-select:none;-webkit-user-select:none}
     <div class="row">
       <button class="btn" id="btnAddAcct">+ 계좌 추가</button>
       <button class="btn" id="btnMatchAll">종목코드 자동매칭</button>
-      <span class="hint" style="flex:1;min-width:200px">매입량과 매입금액만 넣으면 평가금액·수익률은 자동 계산됩니다. 코드가 없거나 조회되지 않는 종목은 <b>수동</b>으로 바꿔 평가금액을 직접 넣으세요. 왼쪽 <b>⠿</b> 손잡이를 끌면 종목·계좌 순서를 바꿀 수 있고, <b>Tab</b> 키로 다음 칸으로 넘어갑니다.</span>
+      <span class="hint" style="flex:1;min-width:220px">매입량과 매입금액만 넣으면 평가금액·수익률은 자동 계산됩니다.
+        종목명 앞 점은 시세 상태입니다 —
+        <b style="color:#3FBF7F">●</b> 조회됨 ·
+        <b style="color:var(--up)">●</b> 조회 실패 ·
+        <b style="color:#E8B93C">●</b> 코드 없음 ·
+        <b style="color:var(--tx2)">○</b> 수동.
+        점을 누르면 수동 입력으로 바뀌어 평가금액을 직접 넣을 수 있고, 마우스를 올리면 실패 사유가 나옵니다.
+        종목코드는 <b>설정 → 종목코드</b>에서 관리합니다. <b>⠿</b> 손잡이로 순서를 바꾸고 <b>Tab</b> 으로 다음 칸으로 넘어갑니다.</span>
     </div>
   </div></div>
   <div id="acctPanels"></div>
@@ -701,6 +718,18 @@ function renderDash(C){
 }
 
 /* ═══════════ 보유종목 ═══════════ */
+
+/* 종목명 앞의 시세 조회 상태 표시. 눌러서 자동↔수동을 바꿉니다.
+   코드 열을 없앤 대신 이 점 하나로 '값이 왜 이런지'를 알 수 있게 했습니다. */
+function statusDot(h, ai, hi){
+  var k, t;
+  if(h.m)          { k='man';  t='수동 입력 — 평가금액을 직접 넣습니다. 눌러서 자동 조회로 바꿉니다.'; }
+  else if(h.ps)    { k='ok';   t='시세 조회됨'+(h.ps?' ('+h.ps+')':'')+(h.pn?' · '+h.pn:'')+'\n눌러서 수동 입력으로 바꿉니다.'; }
+  else if(!h.c)    { k='none'; t='종목코드가 없어 조회하지 않습니다. 설정 → 종목코드에서 넣어주세요.\n눌러서 수동 입력으로 바꿉니다.'; }
+  else             { k='fail'; t='조회 실패 ('+h.c+')'+(h.pe?'\n'+h.pe:'')+'\n눌러서 수동 입력으로 바꿉니다.'; }
+  return `<button class="sdot ${k}" data-tog="${ai},${hi}" title="${esc(t)}" tabindex="-1"></button>`;
+}
+
 function renderHold(C){
   const clsOpts = h => ASSET_CLASSES.map(c=>`<option ${c===h.a?'selected':''}>${c}</option>`).join('');
   $('#acctPanels').innerHTML = S.accounts.map((a,ai)=>{
@@ -713,21 +742,18 @@ function renderHold(C){
       sc+=b; sv+=v;
       const avg = h.q ? b/h.q : 0;
       const share = A.valLoc? v/A.valLoc : 0;
-      const badge = h.ps ? `<span class="tag ok" title="${esc(h.pn||'')}">${esc(h.ps)}</span>`
-                  : (h.pe ? `<span class="tag no" title="${esc(h.pe)}">미조회</span>` : '');
+      const badge = statusDot(h, ai, hi);
       return `<tr data-a="${ai}" data-h="${hi}">
-        <td><div class="cellflex"><span class="grip" title="끌어서 순서 바꾸기">⠿</span><input class="nameinp" data-f="n" value="${esc(h.n)}" placeholder="새 종목"></div></td>
-        <td><input data-f="c" value="${esc(h.c)}" placeholder="코드" style="text-align:left;width:92px">${badge}</td>
+        <td><div class="cellflex"><span class="grip" title="끌어서 순서 바꾸기">⠿</span>${badge}<input class="nameinp" data-f="n" value="${esc(h.n)}" placeholder="새 종목"></div></td>
         <td><select data-f="a" class="clssel">${clsOpts(h)}</select></td>
         <td><input data-f="q" class="num" inputmode="decimal" value="${F.qty(h.q||0)}"></td>
         <td><input data-f="b" class="num" inputmode="decimal" value="${F.cost(h.b||0)}"></td>
         <td class="num mut c-avg">${F.avg(avg)}</td>
         <td>${h.m?`<span class="mut">수동</span>`:`<input data-f="p" class="num" inputmode="decimal" value="${F.price(h.p||0)}">`}</td>
         <td${h.m?'':' class="num c-val"'}>${h.m?`<input data-f="v" class="num" inputmode="decimal" value="${F.val(h.v||0)}">`:F.money(v)}</td>
-        <td class="num c-pf ${sgn(pf)}">${signed(pf,F.pf)}</td>
-        <td class="num c-ret ${sgn(b?pf/b:0)}">${b?signed(pf/b,x=>pct(x,2)):'—'}</td>
+        <td class="num pfcell"><span class="c-pf ${sgn(pf)}">${signed(pf,F.pf)}</span>
+            <em class="c-ret ${sgn(b?pf/b:0)}">${b?signed(pf/b,x=>pct(x,2)):'—'}</em></td>
         <td class="num mut c-share">${pct(share,1)}</td>
-        <td><input type="checkbox" data-f="m" ${h.m?'checked':''} title="수동 입력" style="width:auto"></td>
         <td><button class="xbtn" data-del="${ai},${hi}" tabindex="-1">×</button></td>
       </tr>`;
     }).join('');
@@ -739,17 +765,17 @@ function renderHold(C){
         <span class="sp num h-pf ${sgn(A.profit)}">${signed(A.profit,won)} · ${signed(A.ret,x=>pct(x,2))}</span>
       </div>
       <div class="tw"><table>
-        <thead><tr><th>종목명</th><th>코드</th><th>자산군</th><th>매입량</th><th>매입금액</th><th>평균단가</th>
-          <th>현재가</th><th>평가금액</th><th>수익액</th><th>수익률</th><th>비중</th><th>수동</th><th></th></tr></thead>
+        <thead><tr><th>종목명</th><th>자산군</th><th>매입량</th><th>매입금액</th><th>평균단가</th>
+          <th>현재가</th><th>평가금액</th><th>수익액 · 수익률</th><th>비중</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
         <tfoot>
-          <tr><td>예수금</td><td colspan="3"></td>
+          <tr><td>예수금</td><td colspan="2"></td>
             <td><input class="num" data-cash="${ai}" inputmode="decimal" value="${F.cost(a.cash||0)}"></td>
-            <td colspan="8"></td></tr>
+            <td colspan="6"></td></tr>
           <tr><td>합계 <span class="mut f-krw" style="font-weight:400">${cur?`× ${nfmt(C.fx,0,2)} = ${won(A.value)}`:''}</span></td>
-            <td colspan="3"></td><td class="num f-cost">${F.money(sc+(+a.cash||0))}</td><td colspan="2"></td>
+            <td colspan="2"></td><td class="num f-cost">${F.money(sc+(+a.cash||0))}</td><td colspan="2"></td>
             <td class="num f-val">${F.money(sv+(+a.cash||0))}</td>
-            <td class="num f-pf ${sgn(sv-sc)}">${signed(sv-sc,F.pf)}</td><td colspan="3"></td></tr>
+            <td class="num f-pf ${sgn(sv-sc)}">${signed(sv-sc,F.pf)}</td><td colspan="2"></td></tr>
         </tfoot>
       </table></div>
       <div class="pb" style="padding:9px 13px;border-top:1px solid var(--line)">
@@ -934,6 +960,11 @@ function bindHold(){
 
   root.addEventListener('click', e=>{
     const b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.tog){ const [ai,hi]=b.dataset.tog.split(',').map(Number);
+      const h=S.accounts[ai].h[hi];
+      h.m=!h.m;
+      if(h.m && !h.v) h.v = (+h.p||0)*(+h.q||0);   // 수동으로 바꿀 때 지금 평가금액을 그대로 옮겨 둡니다
+      markDirty(); renderAll(); return; }
     if(b.dataset.del){ const [ai,hi]=b.dataset.del.split(',').map(Number);
       if(confirm(`'${S.accounts[ai].h[hi].n||'이름 없는 종목'}' 종목을 삭제할까요?`)){ S.accounts[ai].h.splice(hi,1); markDirty(); renderAll(); } }
     if(b.dataset.add!=null){ const ai=+b.dataset.add;
