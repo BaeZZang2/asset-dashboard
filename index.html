@@ -709,7 +709,6 @@ function summaryOf(C){
 function show(v){
   $$('nav button').forEach(b=>b.classList.toggle('on', b.dataset.v===v));
   $$('.view').forEach(s=>s.classList.toggle('on', s.id==='v-'+v));
-  LS.set('ad.tab', v);
   if(v==='stat') renderStat();
   if(v==='reb')  renderReb();
   if(v==='cfg')  renderCodes();
@@ -1874,7 +1873,7 @@ function applyLinkConfig(){
 
 /* ═══════════ 시작 ═══════════ */
 function init(){
-  const fromLink = applyLinkConfig();
+  applyLinkConfig();
   $$('nav button').forEach(b=>b.onclick=()=>show(b.dataset.v));
   $('#btnUpdate').onclick  = updatePrices;
   $('#btnSave').onclick    = saveDialog;
@@ -1887,9 +1886,9 @@ function init(){
   S = normalize(S);
   bindHold(); bindReb(); bindCodes(); bindStat(); bindCfg();
   renderAll();
-  show(LS.get('ad.tab', fromLink ? 'dash' : 'dash'));
+  show('dash');   /* 앱을 켜면 언제나 '한눈에' 탭에서 시작합니다. */
   if(CFG.url) pullFromSheet(false, true);
-  else { toast('설정 화면에서 서버를 연결하면 시세 조회와 기기 간 동기화가 켜집니다.','',6000); show('cfg'); }
+  else toast('설정 화면에서 서버를 연결하면 시세 조회와 기기 간 동기화가 켜집니다.','',6000);
 
   /* ── 앱을 다시 볼 때 자동으로 맞춥니다 ──
      휴대폰에서 앱을 내렸다 다시 열거나, PC에서 다른 탭에 갔다 돌아올 때 걸립니다. */
