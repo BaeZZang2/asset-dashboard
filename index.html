@@ -364,7 +364,7 @@ body.dragging{user-select:none;-webkit-user-select:none}
   <div class="panel">
     <div class="ph"><h3>핵심 지표</h3><span class="sp mut" id="statRange"></span></div>
     <div class="pb"><div class="mgrid" id="mGrid"></div>
-      <div class="hint" style="margin-top:10px">수익률 지표는 <b>추가 납입의 영향을 제거한</b> 시간가중수익률(Modified Dietz 연결)로 계산합니다. 돈을 더 넣어서 자산이 는 것과 실제로 잘 굴려서 는 것을 섞지 않기 위해서입니다. 무위험수익률은 연 3.0%로 가정합니다.</div>
+      <div class="hint" style="margin-top:10px">수익률 지표는 <b>추가 납입의 영향을 제거한</b> 시간가중수익률(Modified Dietz 연결)로 계산합니다. 돈을 더 넣어서 자산이 는 것과 실제로 잘 굴려서 는 것을 섞지 않기 위해서입니다. 납입을 따질 때는 <b>달러 계좌를 달러 기준으로</b> 비교하므로, 환율만 움직인 몫은 납입이 아니라 손익으로 잡힙니다. 무위험수익률은 연 3.0%로 가정합니다.</div>
     </div>
   </div>
   <div class="panel"><div class="ph"><h3>투자원금과 평가액</h3></div><div class="pb"><div class="chartbox"><canvas id="c1"></canvas></div></div></div>
@@ -699,7 +699,11 @@ function compute(){
 
 function summaryOf(C){
   const alloc={}; Object.keys(C.alloc).forEach(k=>alloc[k]=Math.round(C.alloc[k]));
-  const accounts={}; C.accts.forEach(a=>accounts[a.name]={cost:Math.round(a.cost),value:Math.round(a.value)});
+  /* 계좌 통화 기준 원금(costLoc)도 함께 남깁니다.
+     통계에서 '환율이 움직여 원화 환산액이 달라진 것'과 '돈을 더 넣은 것'을 가리기 위해 씁니다. */
+  const accounts={}; C.accts.forEach(a=>accounts[a.name]={
+    cost:Math.round(a.cost), value:Math.round(a.value),
+    cur:a.cur||'KRW', costLoc:Math.round(a.costLoc*100)/100 });
   return { cost:Math.round(C.cost), value:Math.round(C.value), profit:Math.round(C.profit),
            rate:C.rate, fx:C.fx, alloc, accounts };
 }
@@ -1667,12 +1671,47 @@ function conflictModal(srv, snaps){
 function loadFromServer(silent){ return pullFromSheet(!silent, silent); }
 
 /* ═══════════ 통계 ═══════════ */
+/* 그 시점의 원금을 '계좌 통화 기준'으로 통화별로 모읍니다.
+   달러 계좌의 원금은 원화로 환산해 두면 환율만 움직여도 금액이 달라지기 때문에,
+   납입을 따질 때는 통화별 원금끼리 비교해야 합니다. */
+function snapCostByCur(sn){
+  const acc = sn && sn.summary && sn.summary.accounts;
+  if(!acc || !Object.keys(acc).length) return null;
+  const fx = snapFx(sn);
+  const out = {};
+  for(const name of Object.keys(acc)){
+    const a = acc[name] || {};
+    const cur = a.cur || (S.accounts.find(x=>x.name===name)||{}).cur || 'KRW';
+    let c = a.costLoc;
+    if(c==null){          /* 통화별 원금을 남기기 전의 기록 — 그 시점 환율로 되돌립니다 */
+      if(cur==='KRW') c = +a.cost||0;
+      else if(fx)     c = (+a.cost||0)/fx;
+      else return null;
+    }
+    out[cur] = (out[cur]||0) + (+c||0);
+  }
+  return out;
+}
+function snapFx(sn){ return +((sn&&sn.summary||{}).fx || (sn&&sn.fx)) || 0; }
+
+/* 두 시점 사이에 실제로 넣고 뺀 돈. 환율이 움직인 몫은 납입으로 세지 않습니다. */
+function flowBetween(p, c){
+  const a = snapCostByCur(p), b = snapCostByCur(c);
+  if(!a || !b) return c.cost - p.cost;               /* 통화 정보가 없으면 예전 방식 */
+  const fx = snapFx(c) || snapFx(p) || +S.fx.usdkrw || 1;
+  let f = 0;
+  new Set([...Object.keys(a), ...Object.keys(b)]).forEach(k=>{
+    f += ((b[k]||0) - (a[k]||0)) * (k==='KRW' ? 1 : fx);
+  });
+  return f;
+}
+
 function stats(){
   const s = SNAPS.slice().sort((a,b)=>keyToDate(a.key)-keyToDate(b.key));
   if(s.length<1) return null;
   const per=[];
   for(let i=1;i<s.length;i++){
-    const flow = s[i].cost - s[i-1].cost;
+    const flow = flowBetween(s[i-1], s[i]);
     const gain = (s[i].value - s[i-1].value) - flow;
     const base = s[i-1].value + flow/2;
     per.push({ key:s[i].key, days:(keyToDate(s[i].key)-keyToDate(s[i-1].key))/864e5, flow, gain,
@@ -1693,7 +1732,7 @@ function stats(){
   return { s, per, curve, twr:idx-1, cagr, mdd, vol,
            sharpe: vol>0&&cagr!=null ? (cagr-0.03)/vol : null,
            last: per.length?per[per.length-1].r:null, ytd,
-           netIn: s[s.length-1].cost - s[0].cost,
+           netIn: per.reduce((a,b)=>a+b.flow,0),
            gainTot: per.reduce((a,b)=>a+b.gain,0) };
 }
 
@@ -1726,8 +1765,8 @@ function renderStat(){
     cell('샤프 지수', st.sharpe!=null?st.sharpe.toFixed(2):'—', st.sharpe>0?'up':'', '무위험 3.0% 가정'),
     cell('직전 시점 대비', st.last!=null?signed(st.last,x=>pct(x,2)):'—', sgn(st.last||0)),
     cell('올해 누적', st.ytd?signed(st.ytd,x=>pct(x,2)):'—', sgn(st.ytd||0)),
-    cell('기간 순납입', signed(st.netIn,won), '', '기록 시작 이후 추가로 넣은 돈'),
-    cell('기간 투자손익', signed(st.gainTot,won), sgn(st.gainTot), '시장에서 벌거나 잃은 돈')
+    cell('기간 순납입', signed(st.netIn,won), '', '기록 시작 이후 추가로 넣은 돈 (환율 변동 제외)'),
+    cell('기간 투자손익', signed(st.gainTot,won), sgn(st.gainTot), '시장에서 벌거나 잃은 돈 (환차손익 포함)')
   ].join('') : `<div style="grid-column:1/-1;text-align:center;padding:26px;color:var(--tx2)">
       아직 기록이 없습니다. <b style="color:var(--gold)">저장하기</b>에서 시점을 남기면 여기에 추이가 쌓입니다.</div>`;
 
