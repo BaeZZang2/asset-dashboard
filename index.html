@@ -371,6 +371,13 @@ body.dragging{user-select:none;-webkit-user-select:none}
   <div class="panel"><div class="ph"><h3>누적 수익률과 낙폭</h3></div><div class="pb"><div class="chartbox"><canvas id="c2"></canvas></div></div></div>
   <div class="panel"><div class="ph"><h3>기간별 수익률</h3></div><div class="pb"><div class="chartbox"><canvas id="c3"></canvas></div></div></div>
   <div class="panel"><div class="ph"><h3>자산군 비중 변화</h3></div><div class="pb"><div class="chartbox"><canvas id="c4"></canvas></div></div></div>
+  <div class="panel"><div class="ph"><h3>계좌별 평가액</h3></div><div class="pb"><div class="chartbox"><canvas id="c5"></canvas></div></div></div>
+  <div class="panel"><div class="ph"><h3>계좌별 수익률</h3></div>
+    <div class="pb"><div class="chartbox"><canvas id="c6"></canvas></div>
+      <div class="tw" style="margin-top:10px"><table id="tAcct" style="min-width:0"></table></div>
+      <div class="hint" style="margin-top:8px">계좌마다 <b>그 계좌에 넣은 원금 대비</b> 손익률입니다. 달러 계좌는 원화로 환산한 금액이라 환율이 움직이면 함께 움직입니다.</div>
+    </div>
+  </div>
   <div class="panel">
     <div class="ph"><h3>저장된 시점</h3></div>
     <div class="tw"><table id="tSnap"></table></div>
@@ -564,6 +571,9 @@ const won = n => (n==null||!isFinite(n)) ? '—' : '₩'+nfmt(Math.round(n));
 const won0= n => (n==null||!isFinite(n)) ? '—' : nfmt(Math.round(n));
 const usd = n => (n==null||!isFinite(n)) ? '—' : '$'+nfmt(n,2,2);
 const pct = (n,d=2) => (n==null||!isFinite(n)) ? '—' : (n*100).toFixed(d)+'%';
+/* 그래프 눈금용 — 계좌 규모가 제각각이라 억/만 단위를 금액에 맞춰 고릅니다. */
+const tickWon = n => !isFinite(n) ? '' : Math.abs(n)>=1e8 ? (n/1e8).toFixed(1)+'억'
+                   : Math.abs(n)>=1e4 ? Math.round(n/1e4)+'만' : String(Math.round(n));
 const qty = n => (n==null||!isFinite(n)) ? '—' : (Math.abs(n%1)<1e-9 ? nfmt(n) : nfmt(n,0,4));
 
 /* 계좌 통화별 표시 규칙
@@ -1673,6 +1683,38 @@ function loadFromServer(silent){ return pullFromSheet(!silent, silent); }
 /* ═══════════ 통계 ═══════════ */
 const CAGR_MIN_DAYS = 90;      /* 연환산 수익률을 보여주기 시작하는 기록 기간 */
 
+/* 계좌 색 — 색약이 있어도 이웃한 색끼리 구분되도록 고른 여덟 가지입니다.
+   순서를 돌려쓰지 않으므로, 계좌가 아홉 개를 넘으면 작은 계좌들은 '기타'로 묶습니다. */
+const ACCT_COLOR = ['#3987E5','#D95926','#199E70','#C98500','#D55181','#008300','#9085E9','#E66767'];
+const ETC_COLOR = '#7A8CA6';
+const ETC_NAME = '그 밖의 계좌';
+
+/* 색은 '어느 계좌냐'에만 달려 있어야 합니다. 금액 순위가 바뀌었다고 색이 따라 바뀌면
+   그래프를 시점마다 다시 읽어야 하므로, 지금 설정된 계좌 순서를 기준으로 색을 정합니다. */
+function acctNames(snaps){
+  const out = S.accounts.map(a=>a.name);
+  snaps.forEach(x=>Object.keys((x.summary&&x.summary.accounts)||{}).forEach(n=>{
+    if(!out.includes(n)) out.push(n);           /* 지금은 없어진 옛 계좌는 뒤에 붙입니다 */
+  }));
+  return out;
+}
+/* 시점마다 계좌별 원금·평가액을 뽑아, 화면에 그릴 계열을 만듭니다. */
+function acctSeries(snaps){
+  const at = (x,n)=>((x.summary&&x.summary.accounts)||{})[n];
+  const names = acctNames(snaps).filter(n=>snaps.some(x=>at(x,n)));
+  const last  = n => { const a = at(snaps[snaps.length-1], n); return a ? +a.value||0 : 0; };
+  const keep  = names.slice().sort((a,b)=>last(b)-last(a)).slice(0, ACCT_COLOR.length);
+  const rows  = n => snaps.map(x=>{ const a=at(x,n); return a ? {cost:+a.cost||0, value:+a.value||0} : null; });
+
+  const series = names.filter(n=>keep.includes(n))
+    .map((n,i)=>({ name:n, color:ACCT_COLOR[i], rows:rows(n) }));
+
+  const etc = names.filter(n=>!keep.includes(n));
+  if(etc.length) series.push({ name:`${ETC_NAME} ${etc.length}곳`, color:ETC_COLOR,
+    rows: snaps.map((x,j)=>etc.reduce((s,n)=>{ const a=rows(n)[j]; return a ? {cost:s.cost+a.cost, value:s.value+a.value} : s; }, {cost:0,value:0})) });
+  return series;
+}
+
 /* 그 시점의 원금을 '계좌 통화 기준'으로 통화별로 모읍니다.
    달러 계좌의 원금은 원화로 환산해 두면 환율만 움직여도 금액이 달라지기 때문에,
    납입을 따질 때는 통화별 원금끼리 비교해야 합니다. */
@@ -1775,7 +1817,8 @@ function renderStat(){
   ].join('') : `<div style="grid-column:1/-1;text-align:center;padding:26px;color:var(--tx2)">
       아직 기록이 없습니다. <b style="color:var(--gold)">저장하기</b>에서 시점을 남기면 여기에 추이가 쌓입니다.</div>`;
 
-  if(!st){ ['c1','c2','c3','c4'].forEach(i=>{ if(charts[i]) charts[i].destroy(); }); $('#tSnap').innerHTML=''; return; }
+  if(!st){ ['c1','c2','c3','c4','c5','c6'].forEach(i=>{ if(charts[i]) charts[i].destroy(); });
+           $('#tSnap').innerHTML=''; $('#tAcct').innerHTML=''; return; }
 
   chart('c1',{ type:'bar', data:{ labels, datasets:[
       { label:'투자원금', data:st.s.map(x=>x.cost), backgroundColor:'#33404F', order:2 },
@@ -1809,6 +1852,34 @@ function renderStat(){
       fill:true, tension:.25, pointRadius:0, borderWidth:1.5 })) },
     options:{ ...BASEOPT, scales:{ x:BASEOPT.scales.x,
       y:{ ...BASEOPT.scales.y, stacked:true, max:100, ticks:{...TICK, callback:v=>v+'%'} } } } });
+
+  /* ── 계좌별 추이 ── 금액과 수익률은 단위가 달라 한 그래프에 겹치지 않고 따로 그립니다. */
+  const AS = acctSeries(st.s);
+  const line = (s, pick) => ({ label:s.name, data:s.rows.map(pick), borderColor:s.color,
+    backgroundColor:s.color, borderWidth:2, tension:.25, pointRadius:3, spanGaps:false });
+  const legendOn = { ...BASEOPT.plugins.legend, display: AS.length>1 };
+
+  chart('c5',{ type:'line', data:{ labels, datasets: AS.map(s=>line(s, r=>r?r.value:null)) },
+    options:{ ...BASEOPT,
+      plugins:{ legend:legendOn, tooltip:{ callbacks:{ label:c=>` ${c.dataset.label}  ${won(c.parsed.y)}` } } },
+      scales:{ x:BASEOPT.scales.x, y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:tickWon } } } } });
+
+  chart('c6',{ type:'line', data:{ labels, datasets: AS.map(s=>line(s, r=>r&&r.cost>0 ? (r.value-r.cost)/r.cost*100 : null)) },
+    options:{ ...BASEOPT,
+      plugins:{ legend:legendOn, tooltip:{ callbacks:{ label:c=>` ${c.dataset.label}  ${signed(c.parsed.y/100, x=>pct(x,2))}` } } },
+      scales:{ x:BASEOPT.scales.x, y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:v=>v.toFixed(1)+'%' },
+        grid:{ color:c=>c.tick.value===0 ? '#4A5668' : GRID.color } } } } });   /* 0% 선을 조금 밝게 */
+
+  /* 그래프를 색으로만 읽지 않아도 되도록, 마지막 시점의 숫자를 표로도 둡니다. */
+  $('#tAcct').innerHTML =
+    `<thead><tr><th>계좌</th><th>원금</th><th>평가액</th><th>수익률</th></tr></thead>
+     <tbody>${AS.map(s=>{ const a=s.rows[s.rows.length-1];
+        const ret = a&&a.cost>0 ? (a.value-a.cost)/a.cost : null;
+        return `<tr>
+      <td><i style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${s.color};margin-right:8px;vertical-align:-1px"></i>${esc(s.name)}</td>
+      <td class="num" title="${a?won(a.cost):''}">${a?tickWon(a.cost):'—'}</td>
+      <td class="num" title="${a?won(a.value):''}">${a?tickWon(a.value):'—'}</td>
+      <td class="num ${sgn(ret||0)}">${ret!=null?signed(ret,x=>pct(x,2)):'—'}</td></tr>`; }).join('')}</tbody>`;
 
   $('#tSnap').innerHTML =
     `<thead><tr><th>시점</th><th>저장시각</th><th>투자액</th><th>평가액</th><th>수익액</th><th>수익률</th><th>환율</th><th></th></tr></thead>
