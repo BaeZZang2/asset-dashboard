@@ -347,6 +347,7 @@ body.dragging{user-select:none;-webkit-user-select:none}
         <button class="btn sm" id="btnPresetEdit">배분 만들기 / 편집</button>
         <button class="btn sm" id="btnRbFill">계좌 종목으로 행 채우기</button>
         <button class="btn sm" id="btnRbSync">현재 보유량·현재가 불러오기</button>
+        <button class="btn sm" id="btnRbQuote">새 종목 코드·시세 찾기</button>
         <button class="btn sm" id="btnRbAuto">목표 수량 자동 계산</button>
         <button class="btn sm" id="btnRbAdd">+ 행 추가</button>
       </div>
@@ -1177,6 +1178,15 @@ function acctModal(ai, newGrp){
 
 /* ═══════════ 리밸런싱 ═══════════ */
 function rebAcct(){ return S.accounts.find(a=>a.name===S.reb.acct) || S.accounts[0]; }
+/* 리밸런싱 행이 어느 시장 종목인지 — 자산군으로 먼저 보고, 애매하면 고른 계좌를 따릅니다. */
+function rebMarket(r){
+  const c = r && r.cls;
+  if(c==='가상화폐') return 'CRYPTO';
+  if(c==='미국주식' || c==='미국채권') return 'US';
+  if(c==='한국주식' || c==='한국채권') return 'KR';
+  const a = rebAcct();
+  return a ? marketOf(a) : 'KR';
+}
 
 function renderReb(){
   if(!S.reb.acct && S.accounts.length) S.reb.acct = S.accounts[0].name;
@@ -1284,13 +1294,32 @@ function bindReb(){
   };
 
   $('#btnRbSync').onclick = ()=>{
-    const a=rebAcct(); if(!a) return; let n=0;
+    const a=rebAcct(); if(!a) return; let n=0, lent=0;
     S.reb.rows.forEach(r=>{
       const h = a.h.find(x=>(r.code&&x.c===r.code)||x.n===r.name);
-      if(h){ r.have=+h.q||0; if(+h.p) r.price=+h.p; n++; }
+      if(h){ r.have=+h.q||0; if(!(r.code||'').trim() && h.c) r.code=h.c; if(+h.p) r.price=+h.p; n++; return; }
+      /* 이 계좌에 없는 종목은 보유량 0. 다른 계좌에 같은 종목이 있으면 코드와 현재가만 빌려옵니다. */
+      r.have = +r.have||0;
+      if(r.price>0 && (r.code||'').trim()) return;
+      const k = nameKey(r.name||'');
+      const y = allHoldings().find(z=>((r.code&&z.h.c===r.code) || (k && nameKey(z.h.n)===k)) && (z.h.c || +z.h.p>0));
+      if(y){ if(!(r.code||'').trim() && y.h.c) r.code=y.h.c; if(!(r.price>0) && +y.h.p) r.price=+y.h.p; lent++; }
     });
     S.reb.budget = +a.cash||0;
-    markDirty(); renderReb(); toast(`${n}개 종목의 보유량과 현재가를 맞췄습니다.`,'ok');
+    markDirty(); renderReb();
+    toast(`${n}개 종목의 보유량과 현재가를 맞췄습니다.` +
+          (lent?` 다른 계좌에서 ${lent}개의 코드·현재가를 가져왔습니다.`:'') , 'ok', lent?4600:2800);
+  };
+
+  /* 계좌에 없는 종목을 직접 적어 넣었을 때 — 코드를 찾아주고 시세까지 받아옵니다. */
+  $('#btnRbQuote').onclick = async ()=>{
+    if(!CFG.url){ toast('설정에서 서버 주소를 먼저 넣어주세요.','err'); return; }
+    const b=$('#btnRbQuote'); b.disabled=true; const old=b.textContent;
+    try{
+      if(matchJobs(null).length){ b.innerHTML='<span class="spin"></span>코드 찾는 중'; await autoMatch(null, true); }
+      b.innerHTML='<span class="spin"></span>시세 받는 중';
+      await updatePrices();
+    } finally { b.disabled=false; b.textContent=old; renderReb(); }
   };
 
   $('#btnRbAuto').onclick = ()=>{
@@ -1419,27 +1448,44 @@ function applyToGroup(g, code, pn){
   g.rows.forEach(x=>{ x.h.c=code; if(pn) x.h.pn=pn; x.h.ps=''; x.h.pe=''; });
 }
 
-async function autoMatch(only){
+/* 코드가 비어 있는 매칭 대상을 모읍니다 — 계좌 보유종목과 리밸런싱 표의 종목 둘 다. */
+function matchJobs(only){
+  const pick = m => (!only || m===only);
+  const jobs = [];
+  codeGroups().forEach(g=>{
+    const x = groupInfo(g), m = marketOf(x);
+    if(x.h.c || g.rows.every(y=>y.h.m) || !pick(m)) return;
+    jobs.push({ label:g.label, market:m, apply:(code,name)=>applyToGroup(g, code, name) });
+  });
+  /* 리밸런싱 표에만 있는 종목 — 계좌에 없어도 코드를 찾아 줍니다. */
+  S.reb.rows.forEach(r=>{
+    const label = baseName(r.name||'');
+    const m = rebMarket(r);
+    if((r.code||'').trim() || !label || !pick(m)) return;
+    jobs.push({ label, market:m, apply:code=>{ r.code = code; } });
+  });
+  return jobs;
+}
+
+async function autoMatch(only, stay){
   if(!CFG.url) { toast('먼저 설정에서 서버를 연결해주세요.','err'); return; }
-  const pick = g => (!only || marketOf(groupInfo(g))===only);
-  const gs = codeGroups().filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m) && pick(g));
-  if(!gs.length){ toast('매칭할 종목이 없습니다.','ok'); return; }
-  const t = toast(`<span class="spin"></span>종목 0/${gs.length} 매칭 중…`);
-  for(let i=0;i<gs.length;i++){
-    const g=gs[i], x=groupInfo(g), key=g.label;
-    t.innerHTML = `<span class="spin"></span>종목 ${i+1}/${gs.length} — ${esc(key)}`;
+  const jobs = matchJobs(only);
+  if(!jobs.length){ toast('매칭할 종목이 없습니다.','ok'); return; }
+  const t = toast(`<span class="spin"></span>종목 0/${jobs.length} 매칭 중…`);
+  for(let i=0;i<jobs.length;i++){
+    const j=jobs[i];
+    t.innerHTML = `<span class="spin"></span>종목 ${i+1}/${jobs.length} — ${esc(j.label)}`;
     try{
-      const r = await api('search',{ q:key });
-      const want = marketOf(x);
-      const hit = (r.items||[]).filter(it=> it.market===want )[0];
-      if(hit) applyToGroup(g, hit.code, hit.name);
+      const r = await api('search',{ q:j.label });
+      const hit = (r.items||[]).filter(it=> it.market===j.market )[0];
+      if(hit) j.apply(hit.code, hit.name);
     }catch(e){ /* 개별 실패는 넘어감 */ }
   }
   t.remove();
-  markDirty(); renderAll(); renderCodes();
-  const left = codeGroups().filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m) && pick(g)).length;
+  markDirty(); renderAll(); renderCodes(); renderReb();
+  const left = matchJobs(only).length;
   toast(`매칭 완료. 코드가 비어 있는 종목 ${left}개는 <b>검색</b> 버튼으로 직접 골라주세요.`, left?'':'ok', 5200);
-  if(!only) show('cfg');
+  if(!only && !stay) show('cfg');
 }
 
 function bindCodes(){
@@ -1499,9 +1545,11 @@ async function updatePrices(){
     if(h.c && h.c.trim()) codes.add(h.c.trim());
     else { noCode++; h.ps=''; h.pe='종목코드가 비어 있어 조회 대상에서 빠졌습니다. 설정 → 종목코드에서 코드를 넣거나 자동매칭을 눌러주세요.'; }
   }));
+  /* 리밸런싱 표에만 있는 종목(계좌에 아직 없는 종목)도 함께 조회합니다. */
+  S.reb.rows.forEach(r=>{ const c=(r.code||'').trim(); if(c) codes.add(c); });
   const t = toast(`<span class="spin"></span>${codes.size}개 종목 시세와 환율을 불러오는 중…`, '', 60000);
 
-  let okN=0, failN=0, fails=[];
+  let okN=0, failN=0, rebN=0, fails=[];
   try{
     const [q,f] = await Promise.allSettled([
       codes.size ? api('quotes',{ items:[...codes].map(c=>({code:c})) }) : Promise.resolve({quotes:[]}),
@@ -1524,12 +1572,16 @@ async function updatePrices(){
           fails.push(`${h.n||code}(${code})`);
         }
       }));
+      S.reb.rows.forEach(r=>{
+        const code=(r.code||'').trim(); if(!code) return;
+        const x=map[code]; if(x&&x.ok){ r.price=x.price; rebN++; }
+      });
     } else throw q.reason;
 
     S.updatedAt = new Date().toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
     markDirty(); renderAll();
     t.remove();
-    toast(`시세 ${okN}개 갱신 완료` + (failN?` · <b>${failN}개 실패</b>`:'') + (noCode?` · 코드 없음 ${noCode}개`:''), (failN||noCode)?'':'ok', 4600);
+    toast(`시세 ${okN}개 갱신 완료` + (rebN?` · 리밸런싱 ${rebN}개`:'') + (failN?` · <b>${failN}개 실패</b>`:'') + (noCode?` · 코드 없음 ${noCode}개`:''), (failN||noCode)?'':'ok', 4600);
     if(fails.length) toast('조회 실패: '+fails.slice(0,6).join(', ')+(fails.length>6?` 외 ${fails.length-6}개`:'')+'<br>설정 → 종목코드 화면에서 <b>미조회</b> 옆에 사유가 나옵니다.','err',7500);
     if(noCode) toast(`코드가 비어 있어 건너뛴 종목이 ${noCode}개 있습니다. 설정 → 종목코드에서 <b>자동매칭 실행</b>을 눌러주세요.`,'err',7500);
   }catch(e){
