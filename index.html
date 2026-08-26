@@ -1188,21 +1188,8 @@ function rebMarket(r){
   return a ? marketOf(a) : 'KR';
 }
 
-function renderReb(){
-  if(!S.reb.acct && S.accounts.length) S.reb.acct = S.accounts[0].name;
-  if(!S.reb.preset) S.reb.preset = S.activePreset || (S.presets[0]&&S.presets[0].name) || '';
-
-  $('#rbAcct').innerHTML   = S.accounts.map(a=>`<option ${a.name===S.reb.acct?'selected':''}>${esc(a.name)}</option>`).join('');
-  $('#rbPreset').innerHTML = S.presets.map(p=>`<option ${p.name===S.reb.preset?'selected':''}>${esc(p.name)}</option>`).join('');
-  $('#rbMode').value = S.reb.mode;
-  $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR');
-
-  const sp = seasonPreset();
-  $('#rbHint').innerHTML = `오늘 기준 권장 배분은 <b>${sp}</b>입니다. ` +
-    (S.reb.mode==='all'
-      ? '전체 재배분은 <b>예수금 + 보유 평가액</b>을 합쳐 목표 비중대로 나눕니다. 매도가 필요한 종목은 사야 할 양이 음수로 나옵니다.'
-      : '예수금만 추가 매수는 <b>기존 보유는 그대로 두고</b> 예수금만 목표 비중대로 나눠 삽니다.');
-
+/* 계산만 합니다. 화면은 건드리지 않으므로, 글자를 입력하는 중에도 안전하게 부를 수 있습니다. */
+function computeReb(){
   const preset = S.presets.find(p=>p.name===S.reb.preset);
   const rows = S.reb.rows;
   const tw = preset ? Object.values(preset.w).reduce((a,b)=>a+b,0) : 0;
@@ -1226,6 +1213,63 @@ function renderReb(){
   });
   const finalVal = rows.reduce((s,r)=>s+(num(r.target))*(+r.price||0),0);
   const need     = rows.reduce((s,r)=>s+((num(r.target))-(+r.have||0))*(+r.price||0),0);
+  return { rows, budget, pool, finalVal, need };
+}
+
+/* 입력칸은 그대로 두고 계산 결과 칸만 다시 씁니다.
+   표 전체를 다시 그리면 지금 글자를 넣고 있던 입력칸이 사라져서,
+   휴대폰에서는 한 글자마다 자판이 내려갑니다. 그래서 입력 중에는 이 함수만 씁니다. */
+function refreshReb(){
+  const { rows, budget, pool, finalVal, need } = computeReb();
+  const tb = $('#tReb tbody'); if(!tb) return;
+  rows.forEach((r,i)=>{
+    const tr = tb.querySelector(`tr[data-i="${i}"]`); if(!tr) return;
+    const T = num(r.target), buy = T-(+r.have||0);
+    const fin = finalVal>0 ? T*(+r.price||0)/finalVal : 0;
+    const gap = fin - r.w;
+    const put = (k, html, cls) => { const td=tr.querySelector(`[data-rc="${k}"]`); if(!td) return;
+      td.innerHTML=html; if(cls!=null) td.className='num '+cls; };
+    put('alloc', won(r.alloc));
+    put('can',   qty(r.can));
+    put('buy',   `<b>${buy>0?'+':''}${qty(buy)}</b>`, sgn(buy));
+    put('cash',  signed(-buy*(+r.price||0),won), sgn(-buy));
+    put('fin',   pct(fin,2), '');
+    put('gap',   signed(gap,x=>pct(x,2)), Math.abs(gap)<0.005?'flat':sgn(gap));
+    const wo = tr.querySelector('[data-rf="wOverride"]');
+    if(wo) wo.placeholder = (r._auto*100).toFixed(2);
+  });
+  rebFoot(rows, pool, finalVal, need, budget);
+}
+
+function rebFoot(rows, pool, finalVal, need, budget){
+  const tf = $('#tReb tfoot');
+  if(tf) tf.innerHTML =
+    `<tr><td>합계</td><td colspan="4"></td><td class="num">${won(pool*rows.reduce((s,r)=>s+r.w,0))}</td>
+      <td colspan="3"></td><td></td><td class="num ${sgn(-need)}">${signed(-need,won)}</td>
+      <td class="num">${pct(rows.reduce((s,r)=>s+(finalVal>0?num(r.target)*(+r.price||0)/finalVal:0),0),2)}</td>
+      <td colspan="2"></td></tr>`;
+  const left = budget - need;
+  $('#rbBal').innerHTML = `배분 대상 <b class="num">${won(pool)}</b> · 매매 후 남는 예수금 <b class="num ${left<0?'up':''}">${won(left)}</b>` +
+    (left<0?' <span class="tag no">예수금 부족</span>':'');
+}
+
+function renderReb(){
+  if(!S.reb.acct && S.accounts.length) S.reb.acct = S.accounts[0].name;
+  if(!S.reb.preset) S.reb.preset = S.activePreset || (S.presets[0]&&S.presets[0].name) || '';
+
+  $('#rbAcct').innerHTML   = S.accounts.map(a=>`<option ${a.name===S.reb.acct?'selected':''}>${esc(a.name)}</option>`).join('');
+  $('#rbPreset').innerHTML = S.presets.map(p=>`<option ${p.name===S.reb.preset?'selected':''}>${esc(p.name)}</option>`).join('');
+  $('#rbMode').value = S.reb.mode;
+  if(document.activeElement !== $('#rbBudget'))          /* 금액을 넣고 있는 중이면 건드리지 않습니다 */
+    $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR');
+
+  const sp = seasonPreset();
+  $('#rbHint').innerHTML = `오늘 기준 권장 배분은 <b>${sp}</b>입니다. ` +
+    (S.reb.mode==='all'
+      ? '전체 재배분은 <b>예수금 + 보유 평가액</b>을 합쳐 목표 비중대로 나눕니다. 매도가 필요한 종목은 사야 할 양이 음수로 나옵니다.'
+      : '예수금만 추가 매수는 <b>기존 보유는 그대로 두고</b> 예수금만 목표 비중대로 나눠 삽니다.');
+
+  const { rows, budget, pool, finalVal, need } = computeReb();
 
   const body = rows.map((r,i)=>{
     const T = num(r.target), buy = T-(+r.have||0);
@@ -1237,14 +1281,14 @@ function renderReb(){
       <td><select data-rf="cls">${ASSET_CLASSES.map(c=>`<option ${c===r.cls?'selected':''}>${c}</option>`).join('')}</select></td>
       <td><input data-rf="wOverride" class="num" placeholder="${(r._auto*100).toFixed(2)}" value="${r.wOverride??''}" style="width:64px"></td>
       <td><input data-rf="price" class="num" value="${r.price||0}" style="width:88px"></td>
-      <td class="num mut">${won(r.alloc)}</td>
-      <td class="num mut">${qty(r.can)}</td>
+      <td class="num mut" data-rc="alloc">${won(r.alloc)}</td>
+      <td class="num mut" data-rc="can">${qty(r.can)}</td>
       <td><input data-rf="have" class="num" value="${r.have||0}" style="width:72px"></td>
       <td><input data-rf="target" class="num" value="${r.target}" placeholder="0" style="width:72px"></td>
-      <td class="num ${sgn(buy)}"><b>${buy>0?'+':''}${qty(buy)}</b></td>
-      <td class="num ${sgn(-buy)}">${signed(-buy*(+r.price||0),won)}</td>
-      <td class="num">${pct(fin,2)}</td>
-      <td class="num ${Math.abs(gap)<0.005?'flat':sgn(gap)}">${signed(gap,x=>pct(x,2))}</td>
+      <td class="num ${sgn(buy)}" data-rc="buy"><b>${buy>0?'+':''}${qty(buy)}</b></td>
+      <td class="num ${sgn(-buy)}" data-rc="cash">${signed(-buy*(+r.price||0),won)}</td>
+      <td class="num" data-rc="fin">${pct(fin,2)}</td>
+      <td class="num ${Math.abs(gap)<0.005?'flat':sgn(gap)}" data-rc="gap">${signed(gap,x=>pct(x,2))}</td>
       <td><button class="xbtn" data-rdel="${i}">×</button></td></tr>`;
   }).join('');
 
@@ -1253,13 +1297,9 @@ function renderReb(){
       <th>매수가능량</th><th>현재 보유량</th><th>최종 보유량</th><th>사야 할 양</th><th>필요 현금</th>
       <th>최종 비중</th><th>목표 대비</th><th></th></tr></thead>
      <tbody>${body||'<tr><td colspan="14" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>계좌 종목으로 행 채우기</b>를 눌러보세요.</td></tr>'}</tbody>
-     <tfoot><tr><td>합계</td><td colspan="4"></td><td class="num">${won(pool*rows.reduce((s,r)=>s+r.w,0))}</td>
-      <td colspan="3"></td><td></td><td class="num ${sgn(-need)}">${signed(-need,won)}</td>
-      <td class="num">${pct(rows.reduce((s,r)=>s+(finalVal>0?num(r.target)*(+r.price||0)/finalVal:0),0),2)}</td><td colspan="2"></td></tr></tfoot>`;
+     <tfoot></tfoot>`;
 
-  const left = budget - need;
-  $('#rbBal').innerHTML = `배분 대상 <b class="num">${won(pool)}</b> · 매매 후 남는 예수금 <b class="num ${left<0?'up':''}">${won(left)}</b>` +
-    (left<0?' <span class="tag no">예수금 부족</span>':'');
+  rebFoot(rows, pool, finalVal, need, budget);
 }
 function num(x){ const n=parseFloat(String(x??'').replace(/,/g,'')); return isFinite(n)?n:0; }
 
@@ -1267,7 +1307,8 @@ function bindReb(){
   $('#rbAcct').onchange   = e=>{ S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0; markDirty(); renderReb(); };
   $('#rbPreset').onchange = e=>{ S.reb.preset=e.target.value; S.activePreset=e.target.value; markDirty(); renderAll(); renderReb(); };
   $('#rbMode').onchange   = e=>{ S.reb.mode=e.target.value; markDirty(); renderReb(); };
-  $('#rbBudget').oninput  = e=>{ S.reb.budget=num(e.target.value); markDirty(); clearTimeout(debT); debT=setTimeout(renderReb,400); };
+  $('#rbBudget').oninput  = e=>{ S.reb.budget=num(e.target.value); markDirty(); clearTimeout(debT); debT=setTimeout(refreshReb,400); };
+  $('#rbBudget').onblur   = ()=>{ $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR'); };
 
   $('#tReb').addEventListener('input', e=>{
     const f=e.target.dataset.rf; if(!f) return;
@@ -1275,9 +1316,12 @@ function bindReb(){
     const r=S.reb.rows[i];
     r[f] = (f==='name'||f==='code'||f==='cls') ? e.target.value
          : (f==='wOverride'||f==='target') ? e.target.value : num(e.target.value);
-    markDirty(); clearTimeout(debT); debT=setTimeout(renderReb,350);
+    markDirty();
+    /* 종목명·코드는 계산에 쓰지 않으므로 화면을 다시 그릴 이유가 없습니다. */
+    if(f==='name' || f==='code') return;
+    clearTimeout(debT); debT=setTimeout(refreshReb,350);
   });
-  $('#tReb').addEventListener('change', e=>{ if(e.target.dataset.rf==='cls') renderReb(); });
+  $('#tReb').addEventListener('change', e=>{ if(e.target.dataset.rf==='cls') refreshReb(); });
   $('#tReb').addEventListener('click', e=>{
     const b=e.target.closest('[data-rdel]'); if(!b) return;
     S.reb.rows.splice(+b.dataset.rdel,1); markDirty(); renderReb();
