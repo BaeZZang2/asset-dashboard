@@ -335,18 +335,19 @@ body.dragging{user-select:none;-webkit-user-select:none}
     <div class="ph"><h3>배분 설정</h3></div>
     <div class="pb">
       <div class="row">
-        <div class="fld" style="min-width:180px"><label>계좌</label><select id="rbAcct"></select></div>
-        <div class="fld" style="min-width:180px"><label>목표 배분</label><select id="rbPreset"></select></div>
-        <div class="fld" style="min-width:190px"><label>방식</label><select id="rbMode">
+        <div class="fld" style="min-width:200px"><label>방식</label><select id="rbMode">
           <option value="all">전체 재배분 (보유분 포함)</option>
-          <option value="cash">예수금만 추가 매수</option>
+          <option value="cash">추가 매수 (금액 지정)</option>
         </select></div>
-        <div class="fld" style="min-width:150px"><label>예수금 (원)</label><input id="rbBudget" class="num" inputmode="numeric"></div>
+        <div class="fld" id="fldRbAcct" style="min-width:180px"><label>계좌</label><select id="rbAcct"></select></div>
+        <div class="fld" style="min-width:180px"><label>목표 배분</label><select id="rbPreset"></select></div>
+        <div class="fld" style="min-width:160px"><label id="labRbBudget">예수금 (원)</label><input id="rbBudget" class="num" inputmode="numeric"></div>
       </div>
       <div class="row" style="margin-top:2px">
         <button class="btn sm" id="btnPresetEdit">배분 만들기 / 편집</button>
         <button class="btn sm" id="btnRbFill">계좌 종목으로 행 채우기</button>
         <button class="btn sm" id="btnRbSync">현재 보유량·현재가 불러오기</button>
+        <button class="btn sm" id="btnRbRows">배분 항목으로 행 만들기</button>
         <button class="btn sm" id="btnRbQuote">새 종목 코드·시세 찾기</button>
         <button class="btn sm" id="btnRbAuto">목표 수량 자동 계산</button>
         <button class="btn sm" id="btnRbAdd">+ 행 추가</button>
@@ -1188,6 +1189,34 @@ function rebMarket(r){
   return a ? marketOf(a) : 'KR';
 }
 
+/* 추가 매수 방식에서 고를 수 있는 종목 — 원화 계좌의 보유 종목을 이름으로 묶습니다.
+   달러 계좌 종목은 금액을 원화로 넣는 화면과 통화가 안 맞아 목록에서 뺍니다. */
+function pickable(cls){
+  const m = new Map();
+  S.accounts.forEach(a=>{
+    if(a.cur!=='KRW') return;
+    a.h.forEach(h=>{
+      if(h.m) return;                                    /* 평가액을 직접 적는 종목은 매수 계획을 세울 수 없습니다 */
+      const k = nameKey(h.n); if(!k) return;
+      if(cls && h.a!==cls) return;
+      const g = m.get(k) || { name:baseName(h.n), code:'', price:0, have:0 };
+      g.have += +h.q||0;
+      if(!g.code && h.c) g.code = h.c;
+      if(!(g.price>0) && +h.p) g.price = +h.p;
+      m.set(k, g);
+    });
+  });
+  return [...m.values()].sort((a,b)=>a.name.localeCompare(b.name,'ko'));
+}
+
+/* 목표 배분에 들어 있는 자산군마다 빈 행을 하나씩 만듭니다(비중이 0인 항목은 뺍니다). */
+function rowsFromPreset(){
+  const p = S.presets.find(x=>x.name===S.reb.preset);
+  if(!p) return [];
+  return ASSET_CLASSES.filter(c=>+p.w[c] > 0)
+    .map(c=>({ name:'', code:'', cls:c, price:0, have:0, target:'' }));
+}
+
 /* 계산만 합니다. 화면은 건드리지 않으므로, 글자를 입력하는 중에도 안전하게 부를 수 있습니다. */
 function computeReb(){
   const preset = S.presets.find(p=>p.name===S.reb.preset);
@@ -1256,27 +1285,46 @@ function rebFoot(rows, pool, finalVal, need, budget){
 function renderReb(){
   if(!S.reb.acct && S.accounts.length) S.reb.acct = S.accounts[0].name;
   if(!S.reb.preset) S.reb.preset = S.activePreset || (S.presets[0]&&S.presets[0].name) || '';
+  const addMode = S.reb.mode==='cash';                   /* 추가 매수 방식인가 */
+
+  /* 추가 매수는 계좌를 고르지 않습니다. 표가 비어 있으면 배분 항목대로 행을 만들어 둡니다. */
+  if(addMode && !S.reb.rows.length) S.reb.rows = rowsFromPreset();
 
   $('#rbAcct').innerHTML   = S.accounts.map(a=>`<option ${a.name===S.reb.acct?'selected':''}>${esc(a.name)}</option>`).join('');
   $('#rbPreset').innerHTML = S.presets.map(p=>`<option ${p.name===S.reb.preset?'selected':''}>${esc(p.name)}</option>`).join('');
   $('#rbMode').value = S.reb.mode;
+  $('#fldRbAcct').style.display = addMode ? 'none' : '';
+  $('#labRbBudget').textContent = addMode ? '추가 매수 금액 (원)' : '예수금 (원)';
+  $('#btnRbFill').style.display = addMode ? 'none' : '';
+  $('#btnRbSync').style.display = addMode ? 'none' : '';
+  $('#btnRbRows').style.display = addMode ? '' : 'none';
   if(document.activeElement !== $('#rbBudget'))          /* 금액을 넣고 있는 중이면 건드리지 않습니다 */
     $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR');
 
   const sp = seasonPreset();
   $('#rbHint').innerHTML = `오늘 기준 권장 배분은 <b>${sp}</b>입니다. ` +
-    (S.reb.mode==='all'
-      ? '전체 재배분은 <b>예수금 + 보유 평가액</b>을 합쳐 목표 비중대로 나눕니다. 매도가 필요한 종목은 사야 할 양이 음수로 나옵니다.'
-      : '예수금만 추가 매수는 <b>기존 보유는 그대로 두고</b> 예수금만 목표 비중대로 나눠 삽니다.');
+    (addMode
+      ? '넣을 금액만 적으면 <b>목표 비중대로 나눠</b> 얼마씩 사야 하는지 보여줍니다. 기존 보유는 건드리지 않습니다. 종목은 <b>원화 계좌에 보유한 것</b> 중에서 고릅니다.'
+      : '전체 재배분은 <b>예수금 + 보유 평가액</b>을 합쳐 목표 비중대로 나눕니다. 매도가 필요한 종목은 사야 할 양이 음수로 나옵니다.');
 
   const { rows, budget, pool, finalVal, need } = computeReb();
+  const opts = {};                                       /* 자산군별 후보 목록은 한 번만 만듭니다 */
+  const pickOf = c => (opts[c] || (opts[c] = pickable(c)));
 
   const body = rows.map((r,i)=>{
     const T = num(r.target), buy = T-(+r.have||0);
     const fin = finalVal>0 ? T*(+r.price||0)/finalVal : 0;
     const gap = fin - r.w;
+    const list = addMode ? pickOf(r.cls) : null;
+    const nameCell = addMode
+      ? `<select data-rf="pick" style="min-width:160px">
+           <option value="">— 종목 고르기 —</option>
+           ${list.map(o=>`<option value="${esc(o.name)}" ${o.name===r.name?'selected':''}>${esc(o.name)}</option>`).join('')}
+           ${r.name && !list.some(o=>o.name===r.name) ? `<option value="${esc(r.name)}" selected>${esc(r.name)} (목록 밖)</option>` : ''}
+         </select>`
+      : `<input data-rf="name" value="${esc(r.name||'')}" style="text-align:left;min-width:150px">`;
     return `<tr data-i="${i}">
-      <td><input data-rf="name" value="${esc(r.name||'')}" style="text-align:left;min-width:150px"></td>
+      <td>${nameCell}</td>
       <td><input data-rf="code" value="${esc(r.code||'')}" style="text-align:left;width:80px"></td>
       <td><select data-rf="cls">${ASSET_CLASSES.map(c=>`<option ${c===r.cls?'selected':''}>${c}</option>`).join('')}</select></td>
       <td><input data-rf="wOverride" class="num" placeholder="${(r._auto*100).toFixed(2)}" value="${r.wOverride??''}" style="width:64px"></td>
@@ -1296,7 +1344,7 @@ function renderReb(){
     `<thead><tr><th>종목</th><th>코드</th><th>자산군</th><th>목표비중%</th><th>현재가</th><th>배분금액</th>
       <th>매수가능량</th><th>현재 보유량</th><th>최종 보유량</th><th>사야 할 양</th><th>필요 현금</th>
       <th>최종 비중</th><th>목표 대비</th><th></th></tr></thead>
-     <tbody>${body||'<tr><td colspan="14" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>계좌 종목으로 행 채우기</b>를 눌러보세요.</td></tr>'}</tbody>
+     <tbody>${body||`<tr><td colspan="14" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>${addMode?'배분 항목으로 행 만들기':'계좌 종목으로 행 채우기'}</b>를 눌러보세요.</td></tr>`}</tbody>
      <tfoot></tfoot>`;
 
   rebFoot(rows, pool, finalVal, need, budget);
@@ -1311,7 +1359,7 @@ function bindReb(){
   $('#rbBudget').onblur   = ()=>{ $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR'); };
 
   $('#tReb').addEventListener('input', e=>{
-    const f=e.target.dataset.rf; if(!f) return;
+    const f=e.target.dataset.rf; if(!f || f==='pick') return;   /* 종목 고르기는 change 에서 처리합니다 */
     const i=+e.target.closest('tr').dataset.i;
     const r=S.reb.rows[i];
     r[f] = (f==='name'||f==='code'||f==='cls') ? e.target.value
@@ -1321,13 +1369,31 @@ function bindReb(){
     if(f==='name' || f==='code') return;
     clearTimeout(debT); debT=setTimeout(refreshReb,350);
   });
-  $('#tReb').addEventListener('change', e=>{ if(e.target.dataset.rf==='cls') refreshReb(); });
+  $('#tReb').addEventListener('change', e=>{
+    const f = e.target.dataset.rf;
+    if(f==='cls'){ S.reb.mode==='cash' ? renderReb() : refreshReb(); return; }   /* 자산군이 바뀌면 고를 수 있는 종목도 바뀝니다 */
+    if(f!=='pick') return;
+    /* 보유 종목에서 고르면 코드·현재가·보유량까지 함께 채웁니다. */
+    const r = S.reb.rows[+e.target.closest('tr').dataset.i];
+    const o = pickable(r.cls).find(x=>x.name===e.target.value);
+    if(o){ r.name=o.name; r.code=o.code; r.price=o.price; r.have=o.have; }
+    else { r.name=''; r.code=''; r.price=0; r.have=0; }
+    markDirty(); renderReb();
+  });
   $('#tReb').addEventListener('click', e=>{
     const b=e.target.closest('[data-rdel]'); if(!b) return;
     S.reb.rows.splice(+b.dataset.rdel,1); markDirty(); renderReb();
   });
 
   $('#btnRbAdd').onclick = ()=>{ S.reb.rows.push({name:'',code:'',cls:'한국주식',price:0,have:0,target:''}); markDirty(); renderReb(); };
+
+  $('#btnRbRows').onclick = ()=>{
+    const fresh = rowsFromPreset();
+    if(!fresh.length){ toast('고른 목표 배분에 비중이 들어 있는 항목이 없습니다.','err'); return; }
+    if(S.reb.rows.length && !confirm(`지금 표의 ${S.reb.rows.length}개 행을 지우고, 목표 배분 항목 ${fresh.length}개로 새로 만듭니다. 계속할까요?`)) return;
+    S.reb.rows = fresh; markDirty(); renderReb();
+    toast(`배분 항목 ${fresh.length}개로 행을 만들었습니다. 각 행에서 종목을 골라주세요.`,'ok');
+  };
 
   $('#btnRbFill').onclick = ()=>{
     const a=rebAcct(); if(!a) return;
