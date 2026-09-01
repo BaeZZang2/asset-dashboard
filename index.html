@@ -1241,8 +1241,14 @@ function computeReb(){
     if(r.target==null || r.target==='') r.target = '';
   });
   const finalVal = rows.reduce((s,r)=>s+(num(r.target))*(+r.price||0),0);
-  const need     = rows.reduce((s,r)=>s+((num(r.target))-(+r.have||0))*(+r.price||0),0);
+  const need     = rows.reduce((s,r)=>s+buyQty(r)*(+r.price||0),0);
   return { rows, budget, pool, finalVal, need };
+}
+
+/* 사야 할 양. 전체 재배분에서는 적어 넣은 값이 '최종 보유량'이라 지금 보유분을 빼고,
+   추가 매수에서는 적어 넣은 값이 곧 '이번에 살 양'입니다. */
+function buyQty(r){
+  return S.reb.mode==='cash' ? num(r.target) : num(r.target) - (+r.have||0);
 }
 
 /* 입력칸은 그대로 두고 계산 결과 칸만 다시 씁니다.
@@ -1253,7 +1259,7 @@ function refreshReb(){
   const tb = $('#tReb tbody'); if(!tb) return;
   rows.forEach((r,i)=>{
     const tr = tb.querySelector(`tr[data-i="${i}"]`); if(!tr) return;
-    const T = num(r.target), buy = T-(+r.have||0);
+    const T = num(r.target), buy = buyQty(r);
     const fin = finalVal>0 ? T*(+r.price||0)/finalVal : 0;
     const gap = fin - r.w;
     const put = (k, html, cls) => { const td=tr.querySelector(`[data-rc="${k}"]`); if(!td) return;
@@ -1271,15 +1277,24 @@ function refreshReb(){
 }
 
 function rebFoot(rows, pool, finalVal, need, budget){
+  const addMode = S.reb.mode==='cash';
+  const alloc = won(pool*rows.reduce((s,r)=>s+r.w,0));
+  const fin   = pct(rows.reduce((s,r)=>s+(finalVal>0?num(r.target)*(+r.price||0)/finalVal:0),0),2);
   const tf = $('#tReb tfoot');
-  if(tf) tf.innerHTML =
-    `<tr><td>합계</td><td colspan="4"></td><td class="num">${won(pool*rows.reduce((s,r)=>s+r.w,0))}</td>
-      <td colspan="3"></td><td></td><td class="num ${sgn(-need)}">${signed(-need,won)}</td>
-      <td class="num">${pct(rows.reduce((s,r)=>s+(finalVal>0?num(r.target)*(+r.price||0)/finalVal:0),0),2)}</td>
-      <td colspan="2"></td></tr>`;
+  /* 추가 매수에서는 보유량 칸 둘이 없어 열 수가 14개에서 12개로 줄어듭니다. */
+  if(tf) tf.innerHTML = addMode
+    ? `<tr><td>합계</td><td colspan="4"></td><td class="num">${alloc}</td>
+        <td colspan="2"></td><td class="num ${sgn(-need)}">${signed(-need,won)}</td>
+        <td class="num">${fin}</td><td colspan="2"></td></tr>`
+    : `<tr><td>합계</td><td colspan="4"></td><td class="num">${alloc}</td>
+        <td colspan="3"></td><td></td><td class="num ${sgn(-need)}">${signed(-need,won)}</td>
+        <td class="num">${fin}</td><td colspan="2"></td></tr>`;
   const left = budget - need;
-  $('#rbBal').innerHTML = `배분 대상 <b class="num">${won(pool)}</b> · 매매 후 남는 예수금 <b class="num ${left<0?'up':''}">${won(left)}</b>` +
-    (left<0?' <span class="tag no">예수금 부족</span>':'');
+  $('#rbBal').innerHTML =
+    (addMode ? `넣을 금액 <b class="num">${won(pool)}</b> · 사고 남는 돈 `
+             : `배분 대상 <b class="num">${won(pool)}</b> · 매매 후 남는 예수금 `) +
+    `<b class="num ${left<0?'up':''}">${won(left)}</b>` +
+    (left<0?` <span class="tag no">${addMode?'금액 부족':'예수금 부족'}</span>`:'');
 }
 
 function renderReb(){
@@ -1312,7 +1327,7 @@ function renderReb(){
   const pickOf = c => (opts[c] || (opts[c] = pickable(c)));
 
   const body = rows.map((r,i)=>{
-    const T = num(r.target), buy = T-(+r.have||0);
+    const T = num(r.target), buy = buyQty(r);
     const fin = finalVal>0 ? T*(+r.price||0)/finalVal : 0;
     const gap = fin - r.w;
     const list = addMode ? pickOf(r.cls) : null;
@@ -1331,20 +1346,25 @@ function renderReb(){
       <td><input data-rf="price" class="num" value="${r.price||0}" style="width:88px"></td>
       <td class="num mut" data-rc="alloc">${won(r.alloc)}</td>
       <td class="num mut" data-rc="can">${qty(r.can)}</td>
-      <td><input data-rf="have" class="num" value="${r.have||0}" style="width:72px"></td>
-      <td><input data-rf="target" class="num" value="${r.target}" placeholder="0" style="width:72px"></td>
-      <td class="num ${sgn(buy)}" data-rc="buy"><b>${buy>0?'+':''}${qty(buy)}</b></td>
+      ${addMode
+        /* 추가 매수에서는 보유량이 계산에 쓰이지 않아, 적어 넣는 값이 곧 '사야 할 양'입니다. */
+        ? `<td><input data-rf="target" class="num" value="${r.target}" placeholder="0" style="width:76px"></td>`
+        : `<td><input data-rf="have" class="num" value="${r.have||0}" style="width:72px"></td>
+           <td><input data-rf="target" class="num" value="${r.target}" placeholder="0" style="width:72px"></td>
+           <td class="num ${sgn(buy)}" data-rc="buy"><b>${buy>0?'+':''}${qty(buy)}</b></td>`}
       <td class="num ${sgn(-buy)}" data-rc="cash">${signed(-buy*(+r.price||0),won)}</td>
       <td class="num" data-rc="fin">${pct(fin,2)}</td>
       <td class="num ${Math.abs(gap)<0.005?'flat':sgn(gap)}" data-rc="gap">${signed(gap,x=>pct(x,2))}</td>
       <td><button class="xbtn" data-rdel="${i}">×</button></td></tr>`;
   }).join('');
 
+  const cols = addMode ? 12 : 14;
   $('#tReb').innerHTML =
     `<thead><tr><th>종목</th><th>코드</th><th>자산군</th><th>목표비중%</th><th>현재가</th><th>배분금액</th>
-      <th>매수가능량</th><th>현재 보유량</th><th>최종 보유량</th><th>사야 할 양</th><th>필요 현금</th>
-      <th>최종 비중</th><th>목표 대비</th><th></th></tr></thead>
-     <tbody>${body||`<tr><td colspan="14" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>${addMode?'배분 항목으로 행 만들기':'계좌 종목으로 행 채우기'}</b>를 눌러보세요.</td></tr>`}</tbody>
+      <th>매수가능량</th>${addMode ? '<th>사야 할 양</th>'
+        : '<th>현재 보유량</th><th>최종 보유량</th><th>사야 할 양</th>'}<th>필요 현금</th>
+      <th>${addMode?'매수 비중':'최종 비중'}</th><th>목표 대비</th><th></th></tr></thead>
+     <tbody>${body||`<tr><td colspan="${cols}" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>${addMode?'배분 항목으로 행 만들기':'계좌 종목으로 행 채우기'}</b>를 눌러보세요.</td></tr>`}</tbody>
      <tfoot></tfoot>`;
 
   rebFoot(rows, pool, finalVal, need, budget);
@@ -1353,8 +1373,17 @@ function num(x){ const n=parseFloat(String(x??'').replace(/,/g,'')); return isFi
 
 function bindReb(){
   $('#rbAcct').onchange   = e=>{ S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0; markDirty(); renderReb(); };
-  $('#rbPreset').onchange = e=>{ S.reb.preset=e.target.value; S.activePreset=e.target.value; markDirty(); renderAll(); renderReb(); };
-  $('#rbMode').onchange   = e=>{ S.reb.mode=e.target.value; markDirty(); renderReb(); };
+  $('#rbPreset').onchange = e=>{
+    S.reb.preset=e.target.value; S.activePreset=e.target.value;
+    if(S.reb.mode==='cash') S.reb.rows = rowsFromPreset();   /* 배분이 바뀌면 항목도 바뀝니다 */
+    markDirty(); renderAll(); renderReb();
+  };
+  $('#rbMode').onchange   = e=>{
+    S.reb.mode=e.target.value;
+    /* 추가 매수로 들어올 때는 목표 배분 항목대로 빈 행을 새로 깝니다. */
+    if(S.reb.mode==='cash') S.reb.rows = rowsFromPreset();
+    markDirty(); renderReb();
+  };
   $('#rbBudget').oninput  = e=>{ S.reb.budget=num(e.target.value); markDirty(); clearTimeout(debT); debT=setTimeout(refreshReb,400); };
   $('#rbBudget').onblur   = ()=>{ $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR'); };
 
@@ -1437,9 +1466,9 @@ function bindReb(){
     const held=S.reb.rows.reduce((s,r)=>s+(+r.have||0)*(+r.price||0),0);
     const pool=S.reb.mode==='all'?budget+held:budget;
     S.reb.rows.forEach(r=>{
-      if(!(r.price>0)){ r.target=r.have||0; return; }
-      const q = Math.floor(pool*r.w/r.price);
-      r.target = S.reb.mode==='all' ? q : (+r.have||0)+q;
+      if(!(r.price>0)){ r.target = S.reb.mode==='cash' ? 0 : (r.have||0); return; }
+      /* 전체 재배분은 '최종 보유량', 추가 매수는 '사야 할 양' — 어느 쪽이든 같은 수식입니다. */
+      r.target = Math.floor(pool*r.w/r.price);
     });
     markDirty(); renderReb(); toast('목표 수량을 채웠습니다. 필요하면 직접 고치세요.','ok');
   };
