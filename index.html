@@ -1373,17 +1373,10 @@ function num(x){ const n=parseFloat(String(x??'').replace(/,/g,'')); return isFi
 
 function bindReb(){
   $('#rbAcct').onchange   = e=>{ S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0; markDirty(); renderReb(); };
-  $('#rbPreset').onchange = e=>{
-    S.reb.preset=e.target.value; S.activePreset=e.target.value;
-    if(S.reb.mode==='cash') S.reb.rows = rowsFromPreset();   /* 배분이 바뀌면 항목도 바뀝니다 */
-    markDirty(); renderAll(); renderReb();
-  };
-  $('#rbMode').onchange   = e=>{
-    S.reb.mode=e.target.value;
-    /* 추가 매수로 들어올 때는 목표 배분 항목대로 빈 행을 새로 깝니다. */
-    if(S.reb.mode==='cash') S.reb.rows = rowsFromPreset();
-    markDirty(); renderReb();
-  };
+  /* 행은 표가 비어 있을 때만 자동으로 만듭니다(renderReb). 적어둔 내용을 말없이 지우지 않도록,
+     이미 행이 있으면 그대로 두고 '배분 항목으로 행 만들기'를 눌렀을 때만 새로 깝니다. */
+  $('#rbPreset').onchange = e=>{ S.reb.preset=e.target.value; S.activePreset=e.target.value; markDirty(); renderAll(); renderReb(); };
+  $('#rbMode').onchange   = e=>{ S.reb.mode=e.target.value; markDirty(); renderReb(); };
   $('#rbBudget').oninput  = e=>{ S.reb.budget=num(e.target.value); markDirty(); clearTimeout(debT); debT=setTimeout(refreshReb,400); };
   $('#rbBudget').onblur   = ()=>{ $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR'); };
 
