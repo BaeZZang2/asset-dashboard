@@ -1978,6 +1978,46 @@ const BASEOPT={ responsive:true, maintainAspectRatio:false, interaction:{mode:'i
   plugins:{ legend:{ labels:{ color:'#96A1B4', boxWidth:10, font:{size:11} } } },
   scales:{ x:{ grid:GRID, ticks:TICK }, y:{ grid:GRID, ticks:TICK } } };
 
+/* ── 날짜 간격을 그대로 반영하는 x축 ──
+   시점을 순서대로만 늘어놓으면 '하루 뒤'와 '넉 달 뒤'가 같은 폭으로 보입니다.
+   날짜를 숫자(밀리초)로 놓고 그리되, 눈금은 기록이 있는 날짜에만 찍습니다.
+   (Chart.js 의 time 축은 날짜 라이브러리를 하나 더 받아야 해서 쓰지 않았습니다.) */
+const tsOf = k => keyToDate(k).getTime();
+function dayLabel(ms){ const d=new Date(ms), p=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
+/* 눈금은 기록이 있는 날짜에만 찍되, 하루 차이로 붙어 있는 시점끼리 글자가 겹치지 않게
+   일정 간격 이상 떨어진 것만 고릅니다. 처음과 마지막 시점은 항상 넣습니다. */
+function tickTimes(ts, max=5){
+  const lo=ts[0], hi=ts[ts.length-1];
+  if(hi<=lo) return [lo];
+  const gap=(hi-lo)/max, out=[lo];
+  ts.slice(1,-1).forEach(t=>{ if(t-out[out.length-1] >= gap) out.push(t); });
+  if(out.length>1 && hi-out[out.length-1] < gap) out.pop();
+  out.push(hi);
+  return out;
+}
+function timeAxis(ts){
+  const lo=ts[0], hi=ts[ts.length-1];
+  const pad = Math.max((hi-lo)*0.03, 432e5);      /* 시점이 하나뿐이어도 축이 무너지지 않게 */
+  return { type:'linear', min:lo-pad, max:hi+pad, grid:GRID, offset:false,
+    ticks:{ ...TICK, autoSkip:false, maxRotation:0, callback:dayLabel },
+    afterBuildTicks: ax=>{ ax.ticks = tickTimes(ts).map(v=>({value:v})); } };
+}
+/* 말풍선 제목은 x값(밀리초)이 그대로 나오지 않게 날짜로 바꿔 줍니다. */
+const TT = extra => ({ callbacks: Object.assign({ title: it=>dayLabel(it[0].parsed.x) }, extra||{}) });
+
+/* 금액 축 눈금 — 값 크기에 맞춰 단위를 하나로 고르고, 눈금끼리 같은 글자가 나오지 않을 만큼
+   자릿수를 잡습니다. ('1.1억'이 세 줄 연달아 찍히던 것을 막습니다) */
+function wonAxis(max){
+  const [div,unit] = Math.abs(max)>=1e8 ? [1e8,'억'] : Math.abs(max)>=1e4 ? [1e4,'만'] : [1,''];
+  return v => {
+    const n = v/div, d = Math.abs(n)>=100 ? 0 : Math.abs(n)>=10 ? 1 : 2;
+    let s = n.toFixed(d);
+    if(s.indexOf('.')>=0) s = s.replace(/\.?0+$/,'');
+    return s + unit;
+  };
+}
+
 function renderStat(){
   const C = compute();
   const st = stats();
@@ -2004,19 +2044,28 @@ function renderStat(){
   if(!st){ ['c1','c2','c3','c4','c5','c6'].forEach(i=>{ if(charts[i]) charts[i].destroy(); });
            $('#tSnap').innerHTML=''; $('#tAcct').innerHTML=''; return; }
 
-  chart('c1',{ type:'bar', data:{ labels, datasets:[
-      { label:'투자원금', data:st.s.map(x=>x.cost), backgroundColor:'#33404F', order:2 },
-      { label:'평가액', type:'line', data:st.s.map(x=>x.value), borderColor:'#E0B34A', backgroundColor:'rgba(224,179,74,.12)',
-        fill:true, tension:.25, pointRadius:3, order:1 } ]},
-    options:{ ...BASEOPT, scales:{ x:BASEOPT.scales.x,
-      y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:v=>(v/1e8).toFixed(1)+'억' } } } } });
+  const T = st.s.map(x=>tsOf(x.key));               /* 시점의 실제 날짜 */
+  const pts = f => st.s.map(x=>({ x:tsOf(x.key), y:f(x) }));
 
-  chart('c2',{ type:'line', data:{ labels:st.curve.map(x=>keyLabel(x.key)), datasets:[
-      { type:'line', label:'누적 수익률', data:st.curve.map(x=>(x.idx-1)*100), borderColor:'#E0B34A',
+  /* 투자원금은 막대였는데, 날짜 간격이 제각각이면 막대 폭을 정할 수 없어 면적으로 바꿨습니다. */
+  chart('c1',{ type:'line', data:{ datasets:[
+      { label:'투자원금', data:pts(x=>x.cost), borderColor:'#5A6A7D', backgroundColor:'rgba(51,64,79,.85)',
+        fill:'origin', tension:.25, pointRadius:0, borderWidth:1.5, order:2 },
+      { label:'평가액', data:pts(x=>x.value), borderColor:'#E0B34A', backgroundColor:'rgba(224,179,74,.14)',
+        fill:'origin', tension:.25, pointRadius:3, order:1 } ]},
+    options:{ ...BASEOPT,
+      plugins:{ legend:BASEOPT.plugins.legend, tooltip:TT({ label:c=>` ${c.dataset.label}  ${won(c.parsed.y)}` }) },
+      scales:{ x:timeAxis(T),
+      y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:wonAxis(Math.max(...st.s.map(x=>x.value))) } } } } });
+
+  chart('c2',{ type:'line', data:{ datasets:[
+      { type:'line', label:'누적 수익률', data:st.curve.map(x=>({x:tsOf(x.key), y:(x.idx-1)*100})), borderColor:'#E0B34A',
         backgroundColor:'rgba(224,179,74,.10)', fill:true, tension:.25, pointRadius:3, yAxisID:'y' },
-      { type:'line', label:'고점 대비 낙폭', data:st.curve.map(x=>x.dd*100), borderColor:'#4C8DF6',
+      { type:'line', label:'고점 대비 낙폭', data:st.curve.map(x=>({x:tsOf(x.key), y:x.dd*100})), borderColor:'#4C8DF6',
         backgroundColor:'rgba(76,141,246,.16)', fill:true, tension:.25, pointRadius:0, yAxisID:'y1' } ]},
-    options:{ ...BASEOPT, scales:{ x:BASEOPT.scales.x,
+    options:{ ...BASEOPT,
+      plugins:{ legend:BASEOPT.plugins.legend, tooltip:TT({ label:c=>` ${c.dataset.label}  ${c.parsed.y.toFixed(2)}%` }) },
+      scales:{ x:timeAxis(T),
       y:{ ...BASEOPT.scales.y, ticks:{...TICK, callback:v=>v.toFixed(0)+'%'} },
       y1:{ position:'right', grid:{display:false}, ticks:{...TICK, callback:v=>v.toFixed(0)+'%'}, max:0 } } } });
 
@@ -2029,29 +2078,32 @@ function renderStat(){
   const ord = c => { const i=ASSET_CLASSES.indexOf(c); return i<0 ? 99 : i; };   // 옛 자산군은 맨 뒤로
   const cls = [...new Set(st.s.flatMap(x=>Object.keys(x.summary&&x.summary.alloc||{})))]
               .sort((a,b)=>ord(a)-ord(b));
-  chart('c4',{ type:'line', data:{ labels, datasets: cls.map(c=>({
+  chart('c4',{ type:'line', data:{ datasets: cls.map(c=>({
       label:c, data:st.s.map(x=>{ const al=(x.summary&&x.summary.alloc)||{};
-        const t=Object.values(al).reduce((a,b)=>a+b,0)||1; return (al[c]||0)/t*100; }),
+        const t=Object.values(al).reduce((a,b)=>a+b,0)||1; return { x:tsOf(x.key), y:(al[c]||0)/t*100 }; }),
       borderColor:CLS_COLOR[c]||'#6E7A8C', backgroundColor:(CLS_COLOR[c]||'#6E7A8C')+'55',
       fill:true, tension:.25, pointRadius:0, borderWidth:1.5 })) },
-    options:{ ...BASEOPT, scales:{ x:BASEOPT.scales.x,
+    options:{ ...BASEOPT,
+      plugins:{ legend:BASEOPT.plugins.legend, tooltip:TT({ label:c=>` ${c.dataset.label}  ${c.parsed.y.toFixed(1)}%` }) },
+      scales:{ x:timeAxis(T),
       y:{ ...BASEOPT.scales.y, stacked:true, max:100, ticks:{...TICK, callback:v=>v+'%'} } } } });
 
   /* ── 계좌별 추이 ── 금액과 수익률은 단위가 달라 한 그래프에 겹치지 않고 따로 그립니다. */
   const AS = acctSeries(st.s);
-  const line = (s, pick) => ({ label:s.name, data:s.rows.map(pick), borderColor:s.color,
+  const line = (s, pick) => ({ label:s.name, data:s.rows.map((r,i)=>({ x:T[i], y:pick(r) })), borderColor:s.color,
     backgroundColor:s.color, borderWidth:2, tension:.25, pointRadius:3, spanGaps:false });
   const legendOn = { ...BASEOPT.plugins.legend, display: AS.length>1 };
 
-  chart('c5',{ type:'line', data:{ labels, datasets: AS.map(s=>line(s, r=>r?r.value:null)) },
+  chart('c5',{ type:'line', data:{ datasets: AS.map(s=>line(s, r=>r?r.value:null)) },
     options:{ ...BASEOPT,
-      plugins:{ legend:legendOn, tooltip:{ callbacks:{ label:c=>` ${c.dataset.label}  ${won(c.parsed.y)}` } } },
-      scales:{ x:BASEOPT.scales.x, y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:tickWon } } } } });
+      plugins:{ legend:legendOn, tooltip:TT({ label:c=>` ${c.dataset.label}  ${won(c.parsed.y)}` }) },
+      scales:{ x:timeAxis(T), y:{ ...BASEOPT.scales.y,
+        ticks:{ ...TICK, callback:wonAxis(Math.max(0,...AS.flatMap(s=>s.rows.map(r=>r?r.value:0)))) } } } } });
 
-  chart('c6',{ type:'line', data:{ labels, datasets: AS.map(s=>line(s, r=>r&&r.cost>0 ? (r.value-r.cost)/r.cost*100 : null)) },
+  chart('c6',{ type:'line', data:{ datasets: AS.map(s=>line(s, r=>r&&r.cost>0 ? (r.value-r.cost)/r.cost*100 : null)) },
     options:{ ...BASEOPT,
-      plugins:{ legend:legendOn, tooltip:{ callbacks:{ label:c=>` ${c.dataset.label}  ${signed(c.parsed.y/100, x=>pct(x,2))}` } } },
-      scales:{ x:BASEOPT.scales.x, y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:v=>v.toFixed(1)+'%' },
+      plugins:{ legend:legendOn, tooltip:TT({ label:c=>` ${c.dataset.label}  ${signed(c.parsed.y/100, x=>pct(x,2))}` }) },
+      scales:{ x:timeAxis(T), y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:v=>v.toFixed(1)+'%' },
         grid:{ color:c=>c.tick.value===0 ? '#4A5668' : GRID.color } } } } });   /* 0% 선을 조금 밝게 */
 
   /* 그래프를 색으로만 읽지 않아도 되도록, 마지막 시점의 숫자를 표로도 둡니다. */
