@@ -335,18 +335,20 @@ body.dragging{user-select:none;-webkit-user-select:none}
     <div class="ph"><h3>배분 설정</h3></div>
     <div class="pb">
       <div class="row">
-        <div class="fld" style="min-width:180px"><label>계좌</label><select id="rbAcct"></select></div>
-        <div class="fld" style="min-width:180px"><label>목표 배분</label><select id="rbPreset"></select></div>
-        <div class="fld" style="min-width:190px"><label>방식</label><select id="rbMode">
+        <div class="fld" style="min-width:200px"><label>방식</label><select id="rbMode">
           <option value="all">전체 재배분 (보유분 포함)</option>
-          <option value="cash">예수금만 추가 매수</option>
+          <option value="cash">추가 매수 (금액 지정)</option>
         </select></div>
-        <div class="fld" style="min-width:150px"><label>예수금 (원)</label><input id="rbBudget" class="num" inputmode="numeric"></div>
+        <div class="fld" id="fldRbAcct" style="min-width:180px"><label>계좌</label><select id="rbAcct"></select></div>
+        <div class="fld" style="min-width:180px"><label>목표 배분</label><select id="rbPreset"></select></div>
+        <div class="fld" style="min-width:160px"><label id="labRbBudget">예수금 (원)</label><input id="rbBudget" class="num" inputmode="numeric"></div>
       </div>
       <div class="row" style="margin-top:2px">
         <button class="btn sm" id="btnPresetEdit">배분 만들기 / 편집</button>
         <button class="btn sm" id="btnRbFill">계좌 종목으로 행 채우기</button>
         <button class="btn sm" id="btnRbSync">현재 보유량·현재가 불러오기</button>
+        <button class="btn sm" id="btnRbRows">배분 항목으로 행 만들기</button>
+        <button class="btn sm" id="btnRbQuote">새 종목 코드·시세 찾기</button>
         <button class="btn sm" id="btnRbAuto">목표 수량 자동 계산</button>
         <button class="btn sm" id="btnRbAdd">+ 행 추가</button>
       </div>
@@ -364,13 +366,20 @@ body.dragging{user-select:none;-webkit-user-select:none}
   <div class="panel">
     <div class="ph"><h3>핵심 지표</h3><span class="sp mut" id="statRange"></span></div>
     <div class="pb"><div class="mgrid" id="mGrid"></div>
-      <div class="hint" style="margin-top:10px">수익률 지표는 <b>추가 납입의 영향을 제거한</b> 시간가중수익률(Modified Dietz 연결)로 계산합니다. 돈을 더 넣어서 자산이 는 것과 실제로 잘 굴려서 는 것을 섞지 않기 위해서입니다. 무위험수익률은 연 3.0%로 가정합니다.</div>
+      <div class="hint" style="margin-top:10px">수익률 지표는 <b>추가 납입의 영향을 제거한</b> 시간가중수익률(Modified Dietz 연결)로 계산합니다. 돈을 더 넣어서 자산이 는 것과 실제로 잘 굴려서 는 것을 섞지 않기 위해서입니다. 납입을 따질 때는 <b>달러 계좌를 달러 기준으로</b> 비교하므로, 환율만 움직인 몫은 납입이 아니라 손익으로 잡힙니다. 무위험수익률은 연 3.0%로 가정합니다.</div>
     </div>
   </div>
   <div class="panel"><div class="ph"><h3>투자원금과 평가액</h3></div><div class="pb"><div class="chartbox"><canvas id="c1"></canvas></div></div></div>
   <div class="panel"><div class="ph"><h3>누적 수익률과 낙폭</h3></div><div class="pb"><div class="chartbox"><canvas id="c2"></canvas></div></div></div>
   <div class="panel"><div class="ph"><h3>기간별 수익률</h3></div><div class="pb"><div class="chartbox"><canvas id="c3"></canvas></div></div></div>
   <div class="panel"><div class="ph"><h3>자산군 비중 변화</h3></div><div class="pb"><div class="chartbox"><canvas id="c4"></canvas></div></div></div>
+  <div class="panel"><div class="ph"><h3>계좌별 평가액</h3></div><div class="pb"><div class="chartbox"><canvas id="c5"></canvas></div></div></div>
+  <div class="panel"><div class="ph"><h3>계좌별 수익률</h3></div>
+    <div class="pb"><div class="chartbox"><canvas id="c6"></canvas></div>
+      <div class="tw" style="margin-top:10px"><table id="tAcct" style="min-width:0"></table></div>
+      <div class="hint" style="margin-top:8px">계좌마다 <b>그 계좌에 넣은 원금 대비</b> 손익률입니다. 달러 계좌는 원화로 환산한 금액이라 환율이 움직이면 함께 움직입니다.</div>
+    </div>
+  </div>
   <div class="panel">
     <div class="ph"><h3>저장된 시점</h3></div>
     <div class="tw"><table id="tSnap"></table></div>
@@ -539,6 +548,14 @@ function normalize(st){
   st.reb = Object.assign({ acct:'', preset:'', mode:'all', budget:0, rows:[] }, st.reb||{});
   if(!Array.isArray(st.reb.rows)) st.reb.rows = [];
   st.reb.rows.forEach(r=>{ if(r) r.cls = migrateClass(r.name, r.cls); });
+  /* 추가 매수에서 적어 넣는 값의 뜻이 '최종 보유량'에서 '사야 할 양'으로 바뀌었습니다.
+     그 전에 저장해 둔 계획은 보유량이 더해진 값이라, 한 번만 빼서 뜻을 맞춥니다. */
+  if(st.reb.tq !== 2){
+    if(st.reb.mode==='cash') st.reb.rows.forEach(r=>{
+      if(r && r.target!=null && r.target!=='') r.target = Math.max(0, num(r.target) - (+r.have||0));
+    });
+    st.reb.tq = 2;
+  }
   st.rev = +st.rev || 0; st.savedAt = st.savedAt || ''; st.savedBy = st.savedBy || '';
   if(!st.activePreset || !st.presets.some(p=>p.name===st.activePreset)) st.activePreset = st.presets[0].name;
   st.accounts.forEach(a=>{
@@ -564,6 +581,9 @@ const won = n => (n==null||!isFinite(n)) ? '—' : '₩'+nfmt(Math.round(n));
 const won0= n => (n==null||!isFinite(n)) ? '—' : nfmt(Math.round(n));
 const usd = n => (n==null||!isFinite(n)) ? '—' : '$'+nfmt(n,2,2);
 const pct = (n,d=2) => (n==null||!isFinite(n)) ? '—' : (n*100).toFixed(d)+'%';
+/* 그래프 눈금용 — 계좌 규모가 제각각이라 억/만 단위를 금액에 맞춰 고릅니다. */
+const tickWon = n => !isFinite(n) ? '' : Math.abs(n)>=1e8 ? (n/1e8).toFixed(1)+'억'
+                   : Math.abs(n)>=1e4 ? Math.round(n/1e4)+'만' : String(Math.round(n));
 const qty = n => (n==null||!isFinite(n)) ? '—' : (Math.abs(n%1)<1e-9 ? nfmt(n) : nfmt(n,0,4));
 
 /* 계좌 통화별 표시 규칙
@@ -699,7 +719,14 @@ function compute(){
 
 function summaryOf(C){
   const alloc={}; Object.keys(C.alloc).forEach(k=>alloc[k]=Math.round(C.alloc[k]));
-  const accounts={}; C.accts.forEach(a=>accounts[a.name]={cost:Math.round(a.cost),value:Math.round(a.value)});
+  /* 계좌 통화 기준 원금(costLoc)도 함께 남깁니다.
+     통계에서 '환율이 움직여 원화 환산액이 달라진 것'과 '돈을 더 넣은 것'을 가리기 위해 씁니다. */
+  /* 예전에 만들어 둔 같은 이름의 계좌가 남아 있어도 어느 하나가 묻히지 않게 열쇠를 다르게 둡니다. */
+  const accounts={}; C.accts.forEach(a=>{
+    let key = a.name; for(let i=2; accounts[key]; i++) key = a.name+' '+i;
+    accounts[key] = { cost:Math.round(a.cost), value:Math.round(a.value),
+                      cur:a.cur||'KRW', costLoc:Math.round(a.costLoc*100)/100 };
+  });
   return { cost:Math.round(C.cost), value:Math.round(C.value), profit:Math.round(C.profit),
            rate:C.rate, fx:C.fx, alloc, accounts };
 }
@@ -709,7 +736,6 @@ function summaryOf(C){
 function show(v){
   $$('nav button').forEach(b=>b.classList.toggle('on', b.dataset.v===v));
   $$('.view').forEach(s=>s.classList.toggle('on', s.id==='v-'+v));
-  LS.set('ad.tab', v);
   if(v==='stat') renderStat();
   if(v==='reb')  renderReb();
   if(v==='cfg')  renderCodes();
@@ -1013,6 +1039,16 @@ function acctNameW(s){
 }
 
 /* 계좌 이름 바꾸기. 리밸런싱은 계좌를 '이름'으로 기억하므로 같이 옮겨 줍니다. */
+/* 계좌 이름은 시점 기록에서 계좌를 찾는 열쇠라, 겹치면 한쪽 기록이 묻힙니다.
+   같은 이름이 있으면 뒤에 숫자를 붙여 서로 다르게 만듭니다. */
+function uniqueAcctName(name, skip){
+  const base = String(name==null?'':name).trim() || '이름 없음';
+  const taken = n => S.accounts.some((a,i)=> i!==skip && a.name===n);
+  if(!taken(base)) return base;
+  for(let i=2; i<=S.accounts.length+2; i++){ const n = base+' '+i; if(!taken(n)) return n; }
+  return base + ' ' + Date.now();
+}
+
 function renameAcct(ai, name){
   const a = S.accounts[ai]; if(!a) return '';
   const old = a.name;
@@ -1151,7 +1187,9 @@ function acctModal(ai, newGrp){
       <option ${coin?'selected':''}>가상자산</option></select>
       <span class="hint">가상자산으로 두면 <b>가상화폐</b> 탭에 나옵니다.</span></div>`,
     ()=>{
-      const name = $('#m_name').value.trim()||'이름 없음';
+      const typed = $('#m_name').value.trim()||'이름 없음';
+      const name = uniqueAcctName(typed, ai>=0 ? ai : -1);
+      if(name !== typed) toast(`이미 <b>${esc(typed)}</b>이(가) 있어 <b>${esc(name)}</b>으로 두었습니다.`,'',4200);
       if(ai>=0) renameAcct(ai, name); else a.name = name;
       a.cur=$('#m_cur').value; a.grp=$('#m_grp').value;
       if(ai<0) S.accounts.push(a);
@@ -1164,22 +1202,51 @@ function acctModal(ai, newGrp){
 
 /* ═══════════ 리밸런싱 ═══════════ */
 function rebAcct(){ return S.accounts.find(a=>a.name===S.reb.acct) || S.accounts[0]; }
+/* 리밸런싱 행의 종목이 어느 시장에 상장돼 있는지.
+   자산군으로 정하면 안 됩니다 — 'TIGER 미국S&P500'처럼 미국에 투자하지만 국내에 상장된
+   종목이 많아서, 자산군이 '미국주식'이라고 미국 시장을 뒤지면 못 찾습니다.
+   그래서 이미 가진 종목이면 그 종목이 담긴 계좌를, 아니면 고른 계좌를 따릅니다. */
+function rebMarket(r){
+  const k = nameKey((r && r.name) || '');
+  const code = ((r && r.code) || '').trim();
+  const h = allHoldings().find(x=>(code && x.h.c===code) || (k && nameKey(x.h.n)===k));
+  if(h) return marketOf(h);
+  if(r && r.cls==='가상화폐') return 'CRYPTO';
+  /* 추가 매수는 원화 계좌에서만 고르므로 국내로 봅니다. */
+  const a = S.reb.mode==='cash' ? null : rebAcct();
+  return a ? marketOf(a) : 'KR';
+}
 
-function renderReb(){
-  if(!S.reb.acct && S.accounts.length) S.reb.acct = S.accounts[0].name;
-  if(!S.reb.preset) S.reb.preset = S.activePreset || (S.presets[0]&&S.presets[0].name) || '';
+/* 추가 매수 방식에서 고를 수 있는 종목 — 원화 계좌의 보유 종목을 이름으로 묶습니다.
+   달러 계좌 종목은 금액을 원화로 넣는 화면과 통화가 안 맞아 목록에서 뺍니다. */
+function pickable(cls){
+  const m = new Map();
+  S.accounts.forEach(a=>{
+    if(a.cur!=='KRW') return;
+    a.h.forEach(h=>{
+      if(h.m) return;                                    /* 평가액을 직접 적는 종목은 매수 계획을 세울 수 없습니다 */
+      const k = nameKey(h.n); if(!k) return;
+      if(cls && h.a!==cls) return;
+      const g = m.get(k) || { name:baseName(h.n), code:'', price:0, have:0 };
+      g.have += +h.q||0;
+      if(!g.code && h.c) g.code = h.c;
+      if(!(g.price>0) && +h.p) g.price = +h.p;
+      m.set(k, g);
+    });
+  });
+  return [...m.values()].sort((a,b)=>a.name.localeCompare(b.name,'ko'));
+}
 
-  $('#rbAcct').innerHTML   = S.accounts.map(a=>`<option ${a.name===S.reb.acct?'selected':''}>${esc(a.name)}</option>`).join('');
-  $('#rbPreset').innerHTML = S.presets.map(p=>`<option ${p.name===S.reb.preset?'selected':''}>${esc(p.name)}</option>`).join('');
-  $('#rbMode').value = S.reb.mode;
-  $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR');
+/* 목표 배분에 들어 있는 자산군마다 빈 행을 하나씩 만듭니다(비중이 0인 항목은 뺍니다). */
+function rowsFromPreset(){
+  const p = S.presets.find(x=>x.name===S.reb.preset);
+  if(!p) return [];
+  return ASSET_CLASSES.filter(c=>+p.w[c] > 0)
+    .map(c=>({ name:'', code:'', cls:c, price:0, have:0, target:'' }));
+}
 
-  const sp = seasonPreset();
-  $('#rbHint').innerHTML = `오늘 기준 권장 배분은 <b>${sp}</b>입니다. ` +
-    (S.reb.mode==='all'
-      ? '전체 재배분은 <b>예수금 + 보유 평가액</b>을 합쳐 목표 비중대로 나눕니다. 매도가 필요한 종목은 사야 할 양이 음수로 나옵니다.'
-      : '예수금만 추가 매수는 <b>기존 보유는 그대로 두고</b> 예수금만 목표 비중대로 나눠 삽니다.');
-
+/* 계산만 합니다. 화면은 건드리지 않으므로, 글자를 입력하는 중에도 안전하게 부를 수 있습니다. */
+function computeReb(){
   const preset = S.presets.find(p=>p.name===S.reb.preset);
   const rows = S.reb.rows;
   const tw = preset ? Object.values(preset.w).reduce((a,b)=>a+b,0) : 0;
@@ -1202,65 +1269,186 @@ function renderReb(){
     if(r.target==null || r.target==='') r.target = '';
   });
   const finalVal = rows.reduce((s,r)=>s+(num(r.target))*(+r.price||0),0);
-  const need     = rows.reduce((s,r)=>s+((num(r.target))-(+r.have||0))*(+r.price||0),0);
+  const need     = rows.reduce((s,r)=>s+buyQty(r)*(+r.price||0),0);
+  return { rows, budget, pool, finalVal, need };
+}
 
-  const body = rows.map((r,i)=>{
-    const T = num(r.target), buy = T-(+r.have||0);
+/* 사야 할 양. 전체 재배분에서는 적어 넣은 값이 '최종 보유량'이라 지금 보유분을 빼고,
+   추가 매수에서는 적어 넣은 값이 곧 '이번에 살 양'입니다. */
+function buyQty(r){
+  return S.reb.mode==='cash' ? num(r.target) : num(r.target) - (+r.have||0);
+}
+
+/* 입력칸은 그대로 두고 계산 결과 칸만 다시 씁니다.
+   표 전체를 다시 그리면 지금 글자를 넣고 있던 입력칸이 사라져서,
+   휴대폰에서는 한 글자마다 자판이 내려갑니다. 그래서 입력 중에는 이 함수만 씁니다. */
+function refreshReb(){
+  const { rows, budget, pool, finalVal, need } = computeReb();
+  const tb = $('#tReb tbody'); if(!tb) return;
+  rows.forEach((r,i)=>{
+    const tr = tb.querySelector(`tr[data-i="${i}"]`); if(!tr) return;
+    const T = num(r.target), buy = buyQty(r);
     const fin = finalVal>0 ? T*(+r.price||0)/finalVal : 0;
     const gap = fin - r.w;
+    const put = (k, html, cls) => { const td=tr.querySelector(`[data-rc="${k}"]`); if(!td) return;
+      td.innerHTML=html; if(cls!=null) td.className='num '+cls; };
+    put('alloc', won(r.alloc));
+    put('can',   qty(r.can));
+    put('buy',   `<b>${buy>0?'+':''}${qty(buy)}</b>`, sgn(buy));
+    put('cash',  signed(-buy*(+r.price||0),won), sgn(-buy));
+    put('fin',   pct(fin,2), '');
+    put('gap',   signed(gap,x=>pct(x,2)), Math.abs(gap)<0.005?'flat':sgn(gap));
+    const wo = tr.querySelector('[data-rf="wOverride"]');
+    if(wo) wo.placeholder = (r._auto*100).toFixed(2);
+  });
+  rebFoot(rows, pool, finalVal, need, budget);
+}
+
+function rebFoot(rows, pool, finalVal, need, budget){
+  const addMode = S.reb.mode==='cash';
+  const alloc = won(pool*rows.reduce((s,r)=>s+r.w,0));
+  const fin   = pct(rows.reduce((s,r)=>s+(finalVal>0?num(r.target)*(+r.price||0)/finalVal:0),0),2);
+  const tf = $('#tReb tfoot');
+  /* 추가 매수에서는 보유량 칸 둘이 없어 열 수가 14개에서 12개로 줄어듭니다. */
+  if(tf) tf.innerHTML = addMode
+    ? `<tr><td>합계</td><td colspan="4"></td><td class="num">${alloc}</td>
+        <td colspan="2"></td><td class="num ${sgn(-need)}">${signed(-need,won)}</td>
+        <td class="num">${fin}</td><td colspan="2"></td></tr>`
+    : `<tr><td>합계</td><td colspan="4"></td><td class="num">${alloc}</td>
+        <td colspan="3"></td><td></td><td class="num ${sgn(-need)}">${signed(-need,won)}</td>
+        <td class="num">${fin}</td><td colspan="2"></td></tr>`;
+  const left = budget - need;
+  $('#rbBal').innerHTML =
+    (addMode ? `넣을 금액 <b class="num">${won(pool)}</b> · 사고 남는 돈 `
+             : `배분 대상 <b class="num">${won(pool)}</b> · 매매 후 남는 예수금 `) +
+    `<b class="num ${left<0?'up':''}">${won(left)}</b>` +
+    (left<0?` <span class="tag no">${addMode?'금액 부족':'예수금 부족'}</span>`:'');
+}
+
+function renderReb(){
+  if(!S.reb.acct && S.accounts.length) S.reb.acct = S.accounts[0].name;
+  if(!S.reb.preset) S.reb.preset = S.activePreset || (S.presets[0]&&S.presets[0].name) || '';
+  const addMode = S.reb.mode==='cash';                   /* 추가 매수 방식인가 */
+
+  /* 추가 매수는 계좌를 고르지 않습니다. 표가 비어 있으면 배분 항목대로 행을 만들어 둡니다. */
+  if(addMode && !S.reb.rows.length) S.reb.rows = rowsFromPreset();
+
+  $('#rbAcct').innerHTML   = S.accounts.map(a=>`<option ${a.name===S.reb.acct?'selected':''}>${esc(a.name)}</option>`).join('');
+  $('#rbPreset').innerHTML = S.presets.map(p=>`<option ${p.name===S.reb.preset?'selected':''}>${esc(p.name)}</option>`).join('');
+  $('#rbMode').value = S.reb.mode;
+  $('#fldRbAcct').style.display = addMode ? 'none' : '';
+  $('#labRbBudget').textContent = addMode ? '추가 매수 금액 (원)' : '예수금 (원)';
+  $('#btnRbFill').style.display = addMode ? 'none' : '';
+  $('#btnRbSync').style.display = addMode ? 'none' : '';
+  $('#btnRbRows').style.display = addMode ? '' : 'none';
+  if(document.activeElement !== $('#rbBudget'))          /* 금액을 넣고 있는 중이면 건드리지 않습니다 */
+    $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR');
+
+  const sp = seasonPreset();
+  $('#rbHint').innerHTML = `오늘 기준 권장 배분은 <b>${sp}</b>입니다. ` +
+    (addMode
+      ? '넣을 금액만 적으면 <b>목표 비중대로 나눠</b> 얼마씩 사야 하는지 보여줍니다. 기존 보유는 건드리지 않습니다. 종목은 <b>원화 계좌에 보유한 것</b> 중에서 고릅니다.'
+      : '전체 재배분은 <b>예수금 + 보유 평가액</b>을 합쳐 목표 비중대로 나눕니다. 매도가 필요한 종목은 사야 할 양이 음수로 나옵니다.');
+
+  const { rows, budget, pool, finalVal, need } = computeReb();
+  const opts = {};                                       /* 자산군별 후보 목록은 한 번만 만듭니다 */
+  const pickOf = c => (opts[c] || (opts[c] = pickable(c)));
+
+  const body = rows.map((r,i)=>{
+    const T = num(r.target), buy = buyQty(r);
+    const fin = finalVal>0 ? T*(+r.price||0)/finalVal : 0;
+    const gap = fin - r.w;
+    const list = addMode ? pickOf(r.cls) : null;
+    const nameCell = addMode
+      ? `<select data-rf="pick" style="min-width:160px">
+           <option value="">— 종목 고르기 —</option>
+           ${list.map(o=>`<option value="${esc(o.name)}" ${o.name===r.name?'selected':''}>${esc(o.name)}</option>`).join('')}
+           ${r.name && !list.some(o=>o.name===r.name) ? `<option value="${esc(r.name)}" selected>${esc(r.name)} (목록 밖)</option>` : ''}
+         </select>`
+      : `<input data-rf="name" value="${esc(r.name||'')}" style="text-align:left;min-width:150px">`;
     return `<tr data-i="${i}">
-      <td><input data-rf="name" value="${esc(r.name||'')}" style="text-align:left;min-width:150px"></td>
+      <td>${nameCell}</td>
       <td><input data-rf="code" value="${esc(r.code||'')}" style="text-align:left;width:80px"></td>
       <td><select data-rf="cls">${ASSET_CLASSES.map(c=>`<option ${c===r.cls?'selected':''}>${c}</option>`).join('')}</select></td>
       <td><input data-rf="wOverride" class="num" placeholder="${(r._auto*100).toFixed(2)}" value="${r.wOverride??''}" style="width:64px"></td>
       <td><input data-rf="price" class="num" value="${r.price||0}" style="width:88px"></td>
-      <td class="num mut">${won(r.alloc)}</td>
-      <td class="num mut">${qty(r.can)}</td>
-      <td><input data-rf="have" class="num" value="${r.have||0}" style="width:72px"></td>
-      <td><input data-rf="target" class="num" value="${r.target}" placeholder="0" style="width:72px"></td>
-      <td class="num ${sgn(buy)}"><b>${buy>0?'+':''}${qty(buy)}</b></td>
-      <td class="num ${sgn(-buy)}">${signed(-buy*(+r.price||0),won)}</td>
-      <td class="num">${pct(fin,2)}</td>
-      <td class="num ${Math.abs(gap)<0.005?'flat':sgn(gap)}">${signed(gap,x=>pct(x,2))}</td>
+      <td class="num mut" data-rc="alloc">${won(r.alloc)}</td>
+      <td class="num mut" data-rc="can">${qty(r.can)}</td>
+      ${addMode
+        /* 추가 매수에서는 보유량이 계산에 쓰이지 않아, 적어 넣는 값이 곧 '사야 할 양'입니다. */
+        ? `<td><input data-rf="target" class="num" value="${r.target}" placeholder="0" style="width:76px"></td>`
+        : `<td><input data-rf="have" class="num" value="${r.have||0}" style="width:72px"></td>
+           <td><input data-rf="target" class="num" value="${r.target}" placeholder="0" style="width:72px"></td>
+           <td class="num ${sgn(buy)}" data-rc="buy"><b>${buy>0?'+':''}${qty(buy)}</b></td>`}
+      <td class="num ${sgn(-buy)}" data-rc="cash">${signed(-buy*(+r.price||0),won)}</td>
+      <td class="num" data-rc="fin">${pct(fin,2)}</td>
+      <td class="num ${Math.abs(gap)<0.005?'flat':sgn(gap)}" data-rc="gap">${signed(gap,x=>pct(x,2))}</td>
       <td><button class="xbtn" data-rdel="${i}">×</button></td></tr>`;
   }).join('');
 
+  const cols = addMode ? 12 : 14;
   $('#tReb').innerHTML =
     `<thead><tr><th>종목</th><th>코드</th><th>자산군</th><th>목표비중%</th><th>현재가</th><th>배분금액</th>
-      <th>매수가능량</th><th>현재 보유량</th><th>최종 보유량</th><th>사야 할 양</th><th>필요 현금</th>
-      <th>최종 비중</th><th>목표 대비</th><th></th></tr></thead>
-     <tbody>${body||'<tr><td colspan="14" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>계좌 종목으로 행 채우기</b>를 눌러보세요.</td></tr>'}</tbody>
-     <tfoot><tr><td>합계</td><td colspan="4"></td><td class="num">${won(pool*rows.reduce((s,r)=>s+r.w,0))}</td>
-      <td colspan="3"></td><td></td><td class="num ${sgn(-need)}">${signed(-need,won)}</td>
-      <td class="num">${pct(rows.reduce((s,r)=>s+(finalVal>0?num(r.target)*(+r.price||0)/finalVal:0),0),2)}</td><td colspan="2"></td></tr></tfoot>`;
+      <th>매수가능량</th>${addMode ? '<th>사야 할 양</th>'
+        : '<th>현재 보유량</th><th>최종 보유량</th><th>사야 할 양</th>'}<th>필요 현금</th>
+      <th>${addMode?'매수 비중':'최종 비중'}</th><th>목표 대비</th><th></th></tr></thead>
+     <tbody>${body||`<tr><td colspan="${cols}" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>${addMode?'배분 항목으로 행 만들기':'계좌 종목으로 행 채우기'}</b>를 눌러보세요.</td></tr>`}</tbody>
+     <tfoot></tfoot>`;
 
-  const left = budget - need;
-  $('#rbBal').innerHTML = `배분 대상 <b class="num">${won(pool)}</b> · 매매 후 남는 예수금 <b class="num ${left<0?'up':''}">${won(left)}</b>` +
-    (left<0?' <span class="tag no">예수금 부족</span>':'');
+  rebFoot(rows, pool, finalVal, need, budget);
 }
 function num(x){ const n=parseFloat(String(x??'').replace(/,/g,'')); return isFinite(n)?n:0; }
 
 function bindReb(){
   $('#rbAcct').onchange   = e=>{ S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0; markDirty(); renderReb(); };
+  /* 행은 표가 비어 있을 때만 자동으로 만듭니다(renderReb). 적어둔 내용을 말없이 지우지 않도록,
+     이미 행이 있으면 그대로 두고 '배분 항목으로 행 만들기'를 눌렀을 때만 새로 깝니다. */
   $('#rbPreset').onchange = e=>{ S.reb.preset=e.target.value; S.activePreset=e.target.value; markDirty(); renderAll(); renderReb(); };
-  $('#rbMode').onchange   = e=>{ S.reb.mode=e.target.value; markDirty(); renderReb(); };
-  $('#rbBudget').oninput  = e=>{ S.reb.budget=num(e.target.value); markDirty(); clearTimeout(debT); debT=setTimeout(renderReb,400); };
+  $('#rbMode').onchange   = e=>{
+    const prev = S.reb.mode; S.reb.mode = e.target.value;
+    /* 적어 넣는 값의 뜻이 방식마다 다릅니다(최종 보유량 / 사야 할 양). 섞이지 않게 비웁니다. */
+    if(prev !== S.reb.mode) S.reb.rows.forEach(r=>{ r.target=''; });
+    markDirty(); renderReb();
+  };
+  $('#rbBudget').oninput  = e=>{ S.reb.budget=num(e.target.value); markDirty(); clearTimeout(debT); debT=setTimeout(refreshReb,400); };
+  $('#rbBudget').onblur   = ()=>{ $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR'); };
 
   $('#tReb').addEventListener('input', e=>{
-    const f=e.target.dataset.rf; if(!f) return;
+    const f=e.target.dataset.rf; if(!f || f==='pick') return;   /* 종목 고르기는 change 에서 처리합니다 */
     const i=+e.target.closest('tr').dataset.i;
     const r=S.reb.rows[i];
     r[f] = (f==='name'||f==='code'||f==='cls') ? e.target.value
          : (f==='wOverride'||f==='target') ? e.target.value : num(e.target.value);
-    markDirty(); clearTimeout(debT); debT=setTimeout(renderReb,350);
+    markDirty();
+    /* 종목명·코드는 계산에 쓰지 않으므로 화면을 다시 그릴 이유가 없습니다. */
+    if(f==='name' || f==='code') return;
+    clearTimeout(debT); debT=setTimeout(refreshReb,350);
   });
-  $('#tReb').addEventListener('change', e=>{ if(e.target.dataset.rf==='cls') renderReb(); });
+  $('#tReb').addEventListener('change', e=>{
+    const f = e.target.dataset.rf;
+    if(f==='cls'){ S.reb.mode==='cash' ? renderReb() : refreshReb(); return; }   /* 자산군이 바뀌면 고를 수 있는 종목도 바뀝니다 */
+    if(f!=='pick') return;
+    /* 보유 종목에서 고르면 코드·현재가·보유량까지 함께 채웁니다. */
+    const r = S.reb.rows[+e.target.closest('tr').dataset.i];
+    const o = pickable(r.cls).find(x=>x.name===e.target.value);
+    if(o){ r.name=o.name; r.code=o.code; r.price=o.price; r.have=o.have; }
+    else { r.name=''; r.code=''; r.price=0; r.have=0; }
+    markDirty(); renderReb();
+  });
   $('#tReb').addEventListener('click', e=>{
     const b=e.target.closest('[data-rdel]'); if(!b) return;
     S.reb.rows.splice(+b.dataset.rdel,1); markDirty(); renderReb();
   });
 
   $('#btnRbAdd').onclick = ()=>{ S.reb.rows.push({name:'',code:'',cls:'한국주식',price:0,have:0,target:''}); markDirty(); renderReb(); };
+
+  $('#btnRbRows').onclick = ()=>{
+    const fresh = rowsFromPreset();
+    if(!fresh.length){ toast('고른 목표 배분에 비중이 들어 있는 항목이 없습니다.','err'); return; }
+    if(S.reb.rows.length && !confirm(`지금 표의 ${S.reb.rows.length}개 행을 지우고, 목표 배분 항목 ${fresh.length}개로 새로 만듭니다. 계속할까요?`)) return;
+    S.reb.rows = fresh; markDirty(); renderReb();
+    toast(`배분 항목 ${fresh.length}개로 행을 만들었습니다. 각 행에서 종목을 골라주세요.`,'ok');
+  };
 
   $('#btnRbFill').onclick = ()=>{
     const a=rebAcct(); if(!a) return;
@@ -1271,13 +1459,32 @@ function bindReb(){
   };
 
   $('#btnRbSync').onclick = ()=>{
-    const a=rebAcct(); if(!a) return; let n=0;
+    const a=rebAcct(); if(!a) return; let n=0, lent=0;
     S.reb.rows.forEach(r=>{
       const h = a.h.find(x=>(r.code&&x.c===r.code)||x.n===r.name);
-      if(h){ r.have=+h.q||0; if(+h.p) r.price=+h.p; n++; }
+      if(h){ r.have=+h.q||0; if(!(r.code||'').trim() && h.c) r.code=h.c; if(+h.p) r.price=+h.p; n++; return; }
+      /* 이 계좌에 없는 종목은 보유량 0. 다른 계좌에 같은 종목이 있으면 코드와 현재가만 빌려옵니다. */
+      r.have = +r.have||0;
+      if(r.price>0 && (r.code||'').trim()) return;
+      const k = nameKey(r.name||'');
+      const y = allHoldings().find(z=>((r.code&&z.h.c===r.code) || (k && nameKey(z.h.n)===k)) && (z.h.c || +z.h.p>0));
+      if(y){ if(!(r.code||'').trim() && y.h.c) r.code=y.h.c; if(!(r.price>0) && +y.h.p) r.price=+y.h.p; lent++; }
     });
     S.reb.budget = +a.cash||0;
-    markDirty(); renderReb(); toast(`${n}개 종목의 보유량과 현재가를 맞췄습니다.`,'ok');
+    markDirty(); renderReb();
+    toast(`${n}개 종목의 보유량과 현재가를 맞췄습니다.` +
+          (lent?` 다른 계좌에서 ${lent}개의 코드·현재가를 가져왔습니다.`:'') , 'ok', lent?4600:2800);
+  };
+
+  /* 계좌에 없는 종목을 직접 적어 넣었을 때 — 코드를 찾아주고 시세까지 받아옵니다. */
+  $('#btnRbQuote').onclick = async ()=>{
+    if(!CFG.url){ toast('설정에서 서버 주소를 먼저 넣어주세요.','err'); return; }
+    const b=$('#btnRbQuote'); b.disabled=true; const old=b.textContent;
+    try{
+      if(matchJobs(null).length){ b.innerHTML='<span class="spin"></span>코드 찾는 중'; await autoMatch(null, true); }
+      b.innerHTML='<span class="spin"></span>시세 받는 중';
+      await updatePrices();
+    } finally { b.disabled=false; b.textContent=old; renderReb(); }
   };
 
   $('#btnRbAuto').onclick = ()=>{
@@ -1285,9 +1492,9 @@ function bindReb(){
     const held=S.reb.rows.reduce((s,r)=>s+(+r.have||0)*(+r.price||0),0);
     const pool=S.reb.mode==='all'?budget+held:budget;
     S.reb.rows.forEach(r=>{
-      if(!(r.price>0)){ r.target=r.have||0; return; }
-      const q = Math.floor(pool*r.w/r.price);
-      r.target = S.reb.mode==='all' ? q : (+r.have||0)+q;
+      if(!(r.price>0)){ r.target = S.reb.mode==='cash' ? 0 : (r.have||0); return; }
+      /* 전체 재배분은 '최종 보유량', 추가 매수는 '사야 할 양' — 어느 쪽이든 같은 수식입니다. */
+      r.target = Math.floor(pool*r.w/r.price);
     });
     markDirty(); renderReb(); toast('목표 수량을 채웠습니다. 필요하면 직접 고치세요.','ok');
   };
@@ -1406,27 +1613,44 @@ function applyToGroup(g, code, pn){
   g.rows.forEach(x=>{ x.h.c=code; if(pn) x.h.pn=pn; x.h.ps=''; x.h.pe=''; });
 }
 
-async function autoMatch(only){
+/* 코드가 비어 있는 매칭 대상을 모읍니다 — 계좌 보유종목과 리밸런싱 표의 종목 둘 다. */
+function matchJobs(only){
+  const pick = m => (!only || m===only);
+  const jobs = [];
+  codeGroups().forEach(g=>{
+    const x = groupInfo(g), m = marketOf(x);
+    if(x.h.c || g.rows.every(y=>y.h.m) || !pick(m)) return;
+    jobs.push({ label:g.label, market:m, apply:(code,name)=>applyToGroup(g, code, name) });
+  });
+  /* 리밸런싱 표에만 있는 종목 — 계좌에 없어도 코드를 찾아 줍니다. */
+  S.reb.rows.forEach(r=>{
+    const label = baseName(r.name||'');
+    const m = rebMarket(r);
+    if((r.code||'').trim() || !label || !pick(m)) return;
+    jobs.push({ label, market:m, apply:code=>{ r.code = code; } });
+  });
+  return jobs;
+}
+
+async function autoMatch(only, stay){
   if(!CFG.url) { toast('먼저 설정에서 서버를 연결해주세요.','err'); return; }
-  const pick = g => (!only || marketOf(groupInfo(g))===only);
-  const gs = codeGroups().filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m) && pick(g));
-  if(!gs.length){ toast('매칭할 종목이 없습니다.','ok'); return; }
-  const t = toast(`<span class="spin"></span>종목 0/${gs.length} 매칭 중…`);
-  for(let i=0;i<gs.length;i++){
-    const g=gs[i], x=groupInfo(g), key=g.label;
-    t.innerHTML = `<span class="spin"></span>종목 ${i+1}/${gs.length} — ${esc(key)}`;
+  const jobs = matchJobs(only);
+  if(!jobs.length){ toast('매칭할 종목이 없습니다.','ok'); return; }
+  const t = toast(`<span class="spin"></span>종목 0/${jobs.length} 매칭 중…`);
+  for(let i=0;i<jobs.length;i++){
+    const j=jobs[i];
+    t.innerHTML = `<span class="spin"></span>종목 ${i+1}/${jobs.length} — ${esc(j.label)}`;
     try{
-      const r = await api('search',{ q:key });
-      const want = marketOf(x);
-      const hit = (r.items||[]).filter(it=> it.market===want )[0];
-      if(hit) applyToGroup(g, hit.code, hit.name);
+      const r = await api('search',{ q:j.label });
+      const hit = (r.items||[]).filter(it=> it.market===j.market )[0];
+      if(hit) j.apply(hit.code, hit.name);
     }catch(e){ /* 개별 실패는 넘어감 */ }
   }
   t.remove();
-  markDirty(); renderAll(); renderCodes();
-  const left = codeGroups().filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m) && pick(g)).length;
+  markDirty(); renderAll(); renderCodes(); renderReb();
+  const left = matchJobs(only).length;
   toast(`매칭 완료. 코드가 비어 있는 종목 ${left}개는 <b>검색</b> 버튼으로 직접 골라주세요.`, left?'':'ok', 5200);
-  if(!only) show('cfg');
+  if(!only && !stay) show('cfg');
 }
 
 function bindCodes(){
@@ -1486,9 +1710,11 @@ async function updatePrices(){
     if(h.c && h.c.trim()) codes.add(h.c.trim());
     else { noCode++; h.ps=''; h.pe='종목코드가 비어 있어 조회 대상에서 빠졌습니다. 설정 → 종목코드에서 코드를 넣거나 자동매칭을 눌러주세요.'; }
   }));
+  /* 리밸런싱 표에만 있는 종목(계좌에 아직 없는 종목)도 함께 조회합니다. */
+  S.reb.rows.forEach(r=>{ const c=(r.code||'').trim(); if(c) codes.add(c); });
   const t = toast(`<span class="spin"></span>${codes.size}개 종목 시세와 환율을 불러오는 중…`, '', 60000);
 
-  let okN=0, failN=0, fails=[];
+  let okN=0, failN=0, rebN=0, fails=[];
   try{
     const [q,f] = await Promise.allSettled([
       codes.size ? api('quotes',{ items:[...codes].map(c=>({code:c})) }) : Promise.resolve({quotes:[]}),
@@ -1511,12 +1737,16 @@ async function updatePrices(){
           fails.push(`${h.n||code}(${code})`);
         }
       }));
+      S.reb.rows.forEach(r=>{
+        const code=(r.code||'').trim(); if(!code) return;
+        const x=map[code]; if(x&&x.ok){ r.price=x.price; rebN++; }
+      });
     } else throw q.reason;
 
     S.updatedAt = new Date().toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
     markDirty(); renderAll();
     t.remove();
-    toast(`시세 ${okN}개 갱신 완료` + (failN?` · <b>${failN}개 실패</b>`:'') + (noCode?` · 코드 없음 ${noCode}개`:''), (failN||noCode)?'':'ok', 4600);
+    toast(`시세 ${okN}개 갱신 완료` + (rebN?` · 리밸런싱 ${rebN}개`:'') + (failN?` · <b>${failN}개 실패</b>`:'') + (noCode?` · 코드 없음 ${noCode}개`:''), (failN||noCode)?'':'ok', 4600);
     if(fails.length) toast('조회 실패: '+fails.slice(0,6).join(', ')+(fails.length>6?` 외 ${fails.length-6}개`:'')+'<br>설정 → 종목코드 화면에서 <b>미조회</b> 옆에 사유가 나옵니다.','err',7500);
     if(noCode) toast(`코드가 비어 있어 건너뛴 종목이 ${noCode}개 있습니다. 설정 → 종목코드에서 <b>자동매칭 실행</b>을 눌러주세요.`,'err',7500);
   }catch(e){
@@ -1668,12 +1898,95 @@ function conflictModal(srv, snaps){
 function loadFromServer(silent){ return pullFromSheet(!silent, silent); }
 
 /* ═══════════ 통계 ═══════════ */
+const CAGR_MIN_DAYS = 90;      /* 연환산 수익률을 보여주기 시작하는 기록 기간 */
+
+/* 계좌 색 — 색약이 있어도 이웃한 색끼리 구분되도록 고른 여덟 가지입니다.
+   순서를 돌려쓰지 않으므로, 계좌가 아홉 개를 넘으면 작은 계좌들은 '기타'로 묶습니다. */
+const ACCT_COLOR = ['#3987E5','#D95926','#199E70','#C98500','#D55181','#008300','#9085E9','#E66767'];
+const ETC_COLOR = '#7A8CA6';
+const ETC_NAME = '그 밖의 계좌';
+
+/* 색은 '어느 계좌냐'에만 달려 있어야 합니다. 금액 순위가 바뀌었다고 색이 따라 바뀌면
+   그래프를 시점마다 다시 읽어야 하므로, 지금 설정된 계좌 순서를 기준으로 색을 정합니다. */
+function acctNames(snaps){
+  const out = [];
+  S.accounts.forEach(a=>{ if(!out.includes(a.name)) out.push(a.name); });   /* 같은 이름은 한 줄로 */
+  snaps.forEach(x=>Object.keys((x.summary&&x.summary.accounts)||{}).forEach(n=>{
+    if(!out.includes(n)) out.push(n);           /* 지금은 없어진 옛 계좌는 뒤에 붙입니다 */
+  }));
+  return out;
+}
+/* 시점마다 계좌별 원금·평가액을 뽑아, 화면에 그릴 계열을 만듭니다. */
+function acctSeries(snaps){
+  const at = (x,n)=>((x.summary&&x.summary.accounts)||{})[n];
+  const names = acctNames(snaps).filter(n=>snaps.some(x=>at(x,n)));
+  const rows  = n => snaps.map(x=>{ const a=at(x,n); return a ? {cost:+a.cost||0, value:+a.value||0} : null; });
+
+  /* 앞에서부터 여덟 곳만 그리고 나머지는 묶습니다. 금액 순위로 고르면 순위가 바뀔 때마다
+     남아 있는 계좌의 색까지 밀려서 바뀌므로, 설정해 둔 계좌 순서를 그대로 씁니다. */
+  const series = names.slice(0, ACCT_COLOR.length)
+    .map((n,i)=>({ name:n, color:ACCT_COLOR[i], rows:rows(n) }));
+
+  const etc = names.slice(ACCT_COLOR.length);
+  if(etc.length) series.push({ name:`${ETC_NAME} ${etc.length}곳`, color:ETC_COLOR,
+    rows: snaps.map((x,j)=>etc.reduce((s,n)=>{ const a=rows(n)[j]; return a ? {cost:s.cost+a.cost, value:s.value+a.value} : s; }, {cost:0,value:0})) });
+  return series;
+}
+
+/* 그 시점의 원금을 '계좌 통화 기준'으로 통화별로 모읍니다.
+   달러 계좌의 원금은 원화로 환산해 두면 환율만 움직여도 금액이 달라지기 때문에,
+   납입을 따질 때는 통화별 원금끼리 비교해야 합니다. */
+function snapCostByCur(sn){
+  const acc = sn && sn.summary && sn.summary.accounts;
+  if(!acc || !Object.keys(acc).length) return null;
+  const fx = snapFx(sn);
+  const out = {};
+  for(const name of Object.keys(acc)){
+    const a = acc[name] || {};
+    let c = a.costLoc, cur = a.cur;
+    if(!cur){
+      /* 통화를 안 남기던 시절의 기록 — 지금 계좌 목록에서 이름으로 찾습니다.
+         이름을 바꿨거나 지운 계좌는 찾지 못하는데, 달러 계좌를 쓴 적이 있다면
+         원화로 넘겨짚으면 안 됩니다. 환율 변동이 다시 납입으로 잡히기 때문입니다. */
+      const cur0 = (S.accounts.find(x=>x.name===name)||{}).cur;
+      if(cur0) cur = cur0;
+      else if(everUsedUSD()) return null;  /* 알 수 없음 — 예전 방식으로 물러납니다 */
+      else cur = 'KRW';                    /* 달러 계좌를 쓴 적이 없으니 원화가 확실합니다 */
+    }
+    if(c==null){          /* 통화별 원금을 남기기 전의 기록 — 그 시점 환율로 되돌립니다 */
+      if(cur==='KRW') c = +a.cost||0;
+      else if(fx)     c = (+a.cost||0)/fx;
+      else return null;
+    }
+    out[cur] = (out[cur]||0) + (+c||0);
+  }
+  return out;
+}
+/* 달러 계좌를 지금 갖고 있거나, 기록에 남아 있던 적이 있는가. */
+function everUsedUSD(){
+  if(S.accounts.some(a=>a.cur==='USD')) return true;
+  return SNAPS.some(x=>Object.values((x.summary&&x.summary.accounts)||{}).some(a=>a && a.cur==='USD'));
+}
+function snapFx(sn){ return +((sn&&sn.summary||{}).fx || (sn&&sn.fx)) || 0; }
+
+/* 두 시점 사이에 실제로 넣고 뺀 돈. 환율이 움직인 몫은 납입으로 세지 않습니다. */
+function flowBetween(p, c){
+  const a = snapCostByCur(p), b = snapCostByCur(c);
+  if(!a || !b) return c.cost - p.cost;               /* 통화 정보가 없으면 예전 방식 */
+  const fx = snapFx(c) || snapFx(p) || +S.fx.usdkrw || 1;
+  let f = 0;
+  new Set([...Object.keys(a), ...Object.keys(b)]).forEach(k=>{
+    f += ((b[k]||0) - (a[k]||0)) * (k==='KRW' ? 1 : fx);
+  });
+  return f;
+}
+
 function stats(){
   const s = SNAPS.slice().sort((a,b)=>keyToDate(a.key)-keyToDate(b.key));
   if(s.length<1) return null;
   const per=[];
   for(let i=1;i<s.length;i++){
-    const flow = s[i].cost - s[i-1].cost;
+    const flow = flowBetween(s[i-1], s[i]);
     const gain = (s[i].value - s[i-1].value) - flow;
     const base = s[i-1].value + flow/2;
     per.push({ key:s[i].key, days:(keyToDate(s[i].key)-keyToDate(s[i-1].key))/864e5, flow, gain,
@@ -1683,7 +1996,9 @@ function stats(){
   per.forEach(p=>{ idx*=(1+p.r); peak=Math.max(peak,idx); const dd=idx/peak-1; mdd=Math.min(mdd,dd);
                    curve.push({key:p.key, idx, dd}); });
   const days = (keyToDate(s[s.length-1].key)-keyToDate(s[0].key))/864e5;
-  const cagr = days>0 ? Math.pow(idx, 365/days)-1 : null;
+  /* 연환산은 짧은 기간에 쓰면 과장됩니다. 하루 -0.04% 도 365번 곱하면 -13% 가 되기 때문에,
+     기록이 90일 넘게 쌓인 뒤에만 보여줍니다. */
+  const cagr = days>=CAGR_MIN_DAYS ? Math.pow(idx, 365/days)-1 : null;
   const mean = per.length? per.reduce((a,b)=>a+b.r,0)/per.length : 0;
   const sd   = per.length>1 ? Math.sqrt(per.reduce((a,b)=>a+(b.r-mean)**2,0)/(per.length-1)) : 0;
   const avgD = per.length? per.reduce((a,b)=>a+b.days,0)/per.length : 30;
@@ -1691,10 +2006,10 @@ function stats(){
   const vol  = sd*Math.sqrt(ppy);
   const yr   = new Date().getFullYear();
   const ytd  = per.filter(p=>+p.key.substr(4,4)===yr).reduce((a,b)=>a*(1+b.r),1)-1;
-  return { s, per, curve, twr:idx-1, cagr, mdd, vol,
+  return { s, per, curve, days, twr:idx-1, cagr, mdd, vol,
            sharpe: vol>0&&cagr!=null ? (cagr-0.03)/vol : null,
            last: per.length?per[per.length-1].r:null, ytd,
-           netIn: s[s.length-1].cost - s[0].cost,
+           netIn: per.reduce((a,b)=>a+b.flow,0),
            gainTot: per.reduce((a,b)=>a+b.gain,0) };
 }
 
@@ -1710,6 +2025,46 @@ const BASEOPT={ responsive:true, maintainAspectRatio:false, interaction:{mode:'i
   plugins:{ legend:{ labels:{ color:'#96A1B4', boxWidth:10, font:{size:11} } } },
   scales:{ x:{ grid:GRID, ticks:TICK }, y:{ grid:GRID, ticks:TICK } } };
 
+/* ── 날짜 간격을 그대로 반영하는 x축 ──
+   시점을 순서대로만 늘어놓으면 '하루 뒤'와 '넉 달 뒤'가 같은 폭으로 보입니다.
+   날짜를 숫자(밀리초)로 놓고 그리되, 눈금은 기록이 있는 날짜에만 찍습니다.
+   (Chart.js 의 time 축은 날짜 라이브러리를 하나 더 받아야 해서 쓰지 않았습니다.) */
+const tsOf = k => keyToDate(k).getTime();
+function dayLabel(ms){ const d=new Date(ms), p=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate()); }
+/* 눈금은 기록이 있는 날짜에만 찍되, 하루 차이로 붙어 있는 시점끼리 글자가 겹치지 않게
+   일정 간격 이상 떨어진 것만 고릅니다. 처음과 마지막 시점은 항상 넣습니다. */
+function tickTimes(ts, max=5){
+  const lo=ts[0], hi=ts[ts.length-1];
+  if(hi<=lo) return [lo];
+  const gap=(hi-lo)/max, out=[lo];
+  ts.slice(1,-1).forEach(t=>{ if(t-out[out.length-1] >= gap) out.push(t); });
+  if(out.length>1 && hi-out[out.length-1] < gap) out.pop();
+  out.push(hi);
+  return out;
+}
+function timeAxis(ts){
+  const lo=ts[0], hi=ts[ts.length-1];
+  const pad = Math.max((hi-lo)*0.03, 432e5);      /* 시점이 하나뿐이어도 축이 무너지지 않게 */
+  return { type:'linear', min:lo-pad, max:hi+pad, grid:GRID, offset:false,
+    ticks:{ ...TICK, autoSkip:false, maxRotation:0, callback:dayLabel },
+    afterBuildTicks: ax=>{ ax.ticks = tickTimes(ts).map(v=>({value:v})); } };
+}
+/* 말풍선 제목은 x값(밀리초)이 그대로 나오지 않게 날짜로 바꿔 줍니다. */
+const TT = extra => ({ callbacks: Object.assign({ title: it=>dayLabel(it[0].parsed.x) }, extra||{}) });
+
+/* 금액 축 눈금 — 값 크기에 맞춰 단위를 하나로 고르고, 눈금끼리 같은 글자가 나오지 않을 만큼
+   자릿수를 잡습니다. ('1.1억'이 세 줄 연달아 찍히던 것을 막습니다) */
+function wonAxis(max){
+  const [div,unit] = Math.abs(max)>=1e8 ? [1e8,'억'] : Math.abs(max)>=1e4 ? [1e4,'만'] : [1,''];
+  return v => {
+    const n = v/div, d = Math.abs(n)>=100 ? 0 : Math.abs(n)>=10 ? 1 : 2;
+    let s = n.toFixed(d);
+    if(s.indexOf('.')>=0) s = s.replace(/\.?0+$/,'');
+    return s + unit;
+  };
+}
+
 function renderStat(){
   const C = compute();
   const st = stats();
@@ -1721,32 +2076,43 @@ function renderStat(){
   $('#mGrid').innerHTML = st ? [
     cell('현재 수익률', signed(C.rate,x=>pct(x,2)), sgn(C.rate), '투자액 대비 단순 손익'),
     cell('누적 수익률(TWR)', st.s.length>1?signed(st.twr,x=>pct(x,2)):'—', sgn(st.twr), '납입 효과 제거'),
-    cell('연환산 수익률(CAGR)', st.cagr!=null?signed(st.cagr,x=>pct(x,2)):'—', sgn(st.cagr||0)),
+    cell('연환산 수익률(CAGR)', st.cagr!=null?signed(st.cagr,x=>pct(x,2)):'—', sgn(st.cagr||0),
+         st.cagr!=null ? '1년 기준으로 환산' : `기록 ${Math.round(st.days)}일 — ${CAGR_MIN_DAYS}일부터 표시`),
     cell('최대 낙폭(MDD)', st.s.length>1?pct(st.mdd,2):'—', st.mdd<0?'down':'flat', '고점 대비 최대 하락'),
     cell('변동성(연율)', st.vol?pct(st.vol,2):'—', '', '기간 수익률 표준편차'),
     cell('샤프 지수', st.sharpe!=null?st.sharpe.toFixed(2):'—', st.sharpe>0?'up':'', '무위험 3.0% 가정'),
     cell('직전 시점 대비', st.last!=null?signed(st.last,x=>pct(x,2)):'—', sgn(st.last||0)),
     cell('올해 누적', st.ytd?signed(st.ytd,x=>pct(x,2)):'—', sgn(st.ytd||0)),
-    cell('기간 순납입', signed(st.netIn,won), '', '기록 시작 이후 추가로 넣은 돈'),
-    cell('기간 투자손익', signed(st.gainTot,won), sgn(st.gainTot), '시장에서 벌거나 잃은 돈')
+    cell('기간 순납입', signed(st.netIn,won), '', '기록 시작 이후 추가로 넣은 돈 (환율 변동 제외)'),
+    cell('기간 투자손익', signed(st.gainTot,won), sgn(st.gainTot), '시장에서 벌거나 잃은 돈 (환차손익 포함)')
   ].join('') : `<div style="grid-column:1/-1;text-align:center;padding:26px;color:var(--tx2)">
       아직 기록이 없습니다. <b style="color:var(--gold)">저장하기</b>에서 시점을 남기면 여기에 추이가 쌓입니다.</div>`;
 
-  if(!st){ ['c1','c2','c3','c4'].forEach(i=>{ if(charts[i]) charts[i].destroy(); }); $('#tSnap').innerHTML=''; return; }
+  if(!st){ ['c1','c2','c3','c4','c5','c6'].forEach(i=>{ if(charts[i]) charts[i].destroy(); });
+           $('#tSnap').innerHTML=''; $('#tAcct').innerHTML=''; return; }
 
-  chart('c1',{ type:'bar', data:{ labels, datasets:[
-      { label:'투자원금', data:st.s.map(x=>x.cost), backgroundColor:'#33404F', order:2 },
-      { label:'평가액', type:'line', data:st.s.map(x=>x.value), borderColor:'#E0B34A', backgroundColor:'rgba(224,179,74,.12)',
-        fill:true, tension:.25, pointRadius:3, order:1 } ]},
-    options:{ ...BASEOPT, scales:{ x:BASEOPT.scales.x,
-      y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:v=>(v/1e8).toFixed(1)+'억' } } } } });
+  const T = st.s.map(x=>tsOf(x.key));               /* 시점의 실제 날짜 */
+  const pts = f => st.s.map(x=>({ x:tsOf(x.key), y:f(x) }));
 
-  chart('c2',{ type:'line', data:{ labels:st.curve.map(x=>keyLabel(x.key)), datasets:[
-      { type:'line', label:'누적 수익률', data:st.curve.map(x=>(x.idx-1)*100), borderColor:'#E0B34A',
+  /* 투자원금은 막대였는데, 날짜 간격이 제각각이면 막대 폭을 정할 수 없어 면적으로 바꿨습니다. */
+  chart('c1',{ type:'line', data:{ datasets:[
+      { label:'투자원금', data:pts(x=>x.cost), borderColor:'#5A6A7D', backgroundColor:'rgba(51,64,79,.85)',
+        fill:'origin', tension:.25, pointRadius:0, borderWidth:1.5, order:2 },
+      { label:'평가액', data:pts(x=>x.value), borderColor:'#E0B34A', backgroundColor:'rgba(224,179,74,.14)',
+        fill:'origin', tension:.25, pointRadius:3, order:1 } ]},
+    options:{ ...BASEOPT,
+      plugins:{ legend:BASEOPT.plugins.legend, tooltip:TT({ label:c=>` ${c.dataset.label}  ${won(c.parsed.y)}` }) },
+      scales:{ x:timeAxis(T),
+      y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:wonAxis(Math.max(...st.s.map(x=>x.value))) } } } } });
+
+  chart('c2',{ type:'line', data:{ datasets:[
+      { type:'line', label:'누적 수익률', data:st.curve.map(x=>({x:tsOf(x.key), y:(x.idx-1)*100})), borderColor:'#E0B34A',
         backgroundColor:'rgba(224,179,74,.10)', fill:true, tension:.25, pointRadius:3, yAxisID:'y' },
-      { type:'line', label:'고점 대비 낙폭', data:st.curve.map(x=>x.dd*100), borderColor:'#4C8DF6',
+      { type:'line', label:'고점 대비 낙폭', data:st.curve.map(x=>({x:tsOf(x.key), y:x.dd*100})), borderColor:'#4C8DF6',
         backgroundColor:'rgba(76,141,246,.16)', fill:true, tension:.25, pointRadius:0, yAxisID:'y1' } ]},
-    options:{ ...BASEOPT, scales:{ x:BASEOPT.scales.x,
+    options:{ ...BASEOPT,
+      plugins:{ legend:BASEOPT.plugins.legend, tooltip:TT({ label:c=>` ${c.dataset.label}  ${c.parsed.y.toFixed(2)}%` }) },
+      scales:{ x:timeAxis(T),
       y:{ ...BASEOPT.scales.y, ticks:{...TICK, callback:v=>v.toFixed(0)+'%'} },
       y1:{ position:'right', grid:{display:false}, ticks:{...TICK, callback:v=>v.toFixed(0)+'%'}, max:0 } } } });
 
@@ -1759,13 +2125,44 @@ function renderStat(){
   const ord = c => { const i=ASSET_CLASSES.indexOf(c); return i<0 ? 99 : i; };   // 옛 자산군은 맨 뒤로
   const cls = [...new Set(st.s.flatMap(x=>Object.keys(x.summary&&x.summary.alloc||{})))]
               .sort((a,b)=>ord(a)-ord(b));
-  chart('c4',{ type:'line', data:{ labels, datasets: cls.map(c=>({
+  chart('c4',{ type:'line', data:{ datasets: cls.map(c=>({
       label:c, data:st.s.map(x=>{ const al=(x.summary&&x.summary.alloc)||{};
-        const t=Object.values(al).reduce((a,b)=>a+b,0)||1; return (al[c]||0)/t*100; }),
+        const t=Object.values(al).reduce((a,b)=>a+b,0)||1; return { x:tsOf(x.key), y:(al[c]||0)/t*100 }; }),
       borderColor:CLS_COLOR[c]||'#6E7A8C', backgroundColor:(CLS_COLOR[c]||'#6E7A8C')+'55',
       fill:true, tension:.25, pointRadius:0, borderWidth:1.5 })) },
-    options:{ ...BASEOPT, scales:{ x:BASEOPT.scales.x,
+    options:{ ...BASEOPT,
+      plugins:{ legend:BASEOPT.plugins.legend, tooltip:TT({ label:c=>` ${c.dataset.label}  ${c.parsed.y.toFixed(1)}%` }) },
+      scales:{ x:timeAxis(T),
       y:{ ...BASEOPT.scales.y, stacked:true, max:100, ticks:{...TICK, callback:v=>v+'%'} } } } });
+
+  /* ── 계좌별 추이 ── 금액과 수익률은 단위가 달라 한 그래프에 겹치지 않고 따로 그립니다. */
+  const AS = acctSeries(st.s);
+  const line = (s, pick) => ({ label:s.name, data:s.rows.map((r,i)=>({ x:T[i], y:pick(r) })), borderColor:s.color,
+    backgroundColor:s.color, borderWidth:2, tension:.25, pointRadius:3, spanGaps:false });
+  const legendOn = { ...BASEOPT.plugins.legend, display: AS.length>1 };
+
+  chart('c5',{ type:'line', data:{ datasets: AS.map(s=>line(s, r=>r?r.value:null)) },
+    options:{ ...BASEOPT,
+      plugins:{ legend:legendOn, tooltip:TT({ label:c=>` ${c.dataset.label}  ${won(c.parsed.y)}` }) },
+      scales:{ x:timeAxis(T), y:{ ...BASEOPT.scales.y,
+        ticks:{ ...TICK, callback:wonAxis(Math.max(0,...AS.flatMap(s=>s.rows.map(r=>r?r.value:0)))) } } } } });
+
+  chart('c6',{ type:'line', data:{ datasets: AS.map(s=>line(s, r=>r&&r.cost>0 ? (r.value-r.cost)/r.cost*100 : null)) },
+    options:{ ...BASEOPT,
+      plugins:{ legend:legendOn, tooltip:TT({ label:c=>` ${c.dataset.label}  ${signed(c.parsed.y/100, x=>pct(x,2))}` }) },
+      scales:{ x:timeAxis(T), y:{ ...BASEOPT.scales.y, ticks:{ ...TICK, callback:v=>v.toFixed(1)+'%' },
+        grid:{ color:c=>c.tick.value===0 ? '#4A5668' : GRID.color } } } } });   /* 0% 선을 조금 밝게 */
+
+  /* 그래프를 색으로만 읽지 않아도 되도록, 마지막 시점의 숫자를 표로도 둡니다. */
+  $('#tAcct').innerHTML =
+    `<thead><tr><th>계좌</th><th>원금</th><th>평가액</th><th>수익률</th></tr></thead>
+     <tbody>${AS.map(s=>{ const a=s.rows[s.rows.length-1];
+        const ret = a&&a.cost>0 ? (a.value-a.cost)/a.cost : null;
+        return `<tr>
+      <td><i style="display:inline-block;width:11px;height:11px;border-radius:3px;background:${s.color};margin-right:8px;vertical-align:-1px"></i>${esc(s.name)}</td>
+      <td class="num" title="${a?won(a.cost):''}">${a?tickWon(a.cost):'—'}</td>
+      <td class="num" title="${a?won(a.value):''}">${a?tickWon(a.value):'—'}</td>
+      <td class="num ${sgn(ret||0)}">${ret!=null?signed(ret,x=>pct(x,2)):'—'}</td></tr>`; }).join('')}</tbody>`;
 
   $('#tSnap').innerHTML =
     `<thead><tr><th>시점</th><th>저장시각</th><th>투자액</th><th>평가액</th><th>수익액</th><th>수익률</th><th>환율</th><th></th></tr></thead>
@@ -1784,7 +2181,7 @@ function bindStat(){
     const l=e.target.closest('[data-snapload]'), d=e.target.closest('[data-snapdel]');
     if(l){ if(!confirm(`${keyLabel(l.dataset.snapload)} 시점의 내용을 화면에 불러옵니다.\n저장하지 않은 현재 내용은 사라집니다. 계속할까요?`)) return;
       try{ const r=await api('getSnap',{key:l.dataset.snapload});
-        if(r.state&&r.state.accounts){ S=r.state; persist(); dirty=true; renderAll(); show('dash');
+        if(r.state&&r.state.accounts){ S=normalize(r.state); persist(); dirty=true; renderAll(); show('dash');
           toast(`${keyLabel(l.dataset.snapload)} 시점을 불러왔습니다.`,'ok'); }
         else toast('그 시점의 상세 내용이 없습니다.','err');
       }catch(err){ toast(err.message,'err'); } }
@@ -1847,7 +2244,7 @@ function bindCfg(){
     const i=document.createElement('input'); i.type='file'; i.accept='.json';
     i.onchange=()=>{ const f=i.files[0]; if(!f) return; const rd=new FileReader();
       rd.onload=()=>{ try{ const j=JSON.parse(rd.result); if(!j.accounts) throw new Error('형식이 맞지 않습니다.');
-        S=j; markDirty(); renderAll(); toast('가져왔습니다. 저장하기를 눌러 서버에도 반영하세요.','ok'); }
+        S=normalize(j); markDirty(); renderAll(); toast('가져왔습니다. 저장하기를 눌러 서버에도 반영하세요.','ok'); }
         catch(e){ toast('가져오기 실패: '+e.message,'err'); } };
       rd.readAsText(f); };
     i.click();
@@ -1874,7 +2271,7 @@ function applyLinkConfig(){
 
 /* ═══════════ 시작 ═══════════ */
 function init(){
-  const fromLink = applyLinkConfig();
+  applyLinkConfig();
   $$('nav button').forEach(b=>b.onclick=()=>show(b.dataset.v));
   $('#btnUpdate').onclick  = updatePrices;
   $('#btnSave').onclick    = saveDialog;
@@ -1887,9 +2284,9 @@ function init(){
   S = normalize(S);
   bindHold(); bindReb(); bindCodes(); bindStat(); bindCfg();
   renderAll();
-  show(LS.get('ad.tab', fromLink ? 'dash' : 'dash'));
+  show('dash');   /* 앱을 켜면 언제나 '한눈에' 탭에서 시작합니다. */
   if(CFG.url) pullFromSheet(false, true);
-  else { toast('설정 화면에서 서버를 연결하면 시세 조회와 기기 간 동기화가 켜집니다.','',6000); show('cfg'); }
+  else toast('설정 화면에서 서버를 연결하면 시세 조회와 기기 간 동기화가 켜집니다.','',6000);
 
   /* ── 앱을 다시 볼 때 자동으로 맞춥니다 ──
      휴대폰에서 앱을 내렸다 다시 열거나, PC에서 다른 탭에 갔다 돌아올 때 걸립니다. */
