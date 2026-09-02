@@ -548,6 +548,14 @@ function normalize(st){
   st.reb = Object.assign({ acct:'', preset:'', mode:'all', budget:0, rows:[] }, st.reb||{});
   if(!Array.isArray(st.reb.rows)) st.reb.rows = [];
   st.reb.rows.forEach(r=>{ if(r) r.cls = migrateClass(r.name, r.cls); });
+  /* 추가 매수에서 적어 넣는 값의 뜻이 '최종 보유량'에서 '사야 할 양'으로 바뀌었습니다.
+     그 전에 저장해 둔 계획은 보유량이 더해진 값이라, 한 번만 빼서 뜻을 맞춥니다. */
+  if(st.reb.tq !== 2){
+    if(st.reb.mode==='cash') st.reb.rows.forEach(r=>{
+      if(r && r.target!=null && r.target!=='') r.target = Math.max(0, num(r.target) - (+r.have||0));
+    });
+    st.reb.tq = 2;
+  }
   st.rev = +st.rev || 0; st.savedAt = st.savedAt || ''; st.savedBy = st.savedBy || '';
   if(!st.activePreset || !st.presets.some(p=>p.name===st.activePreset)) st.activePreset = st.presets[0].name;
   st.accounts.forEach(a=>{
@@ -1179,13 +1187,18 @@ function acctModal(ai, newGrp){
 
 /* ═══════════ 리밸런싱 ═══════════ */
 function rebAcct(){ return S.accounts.find(a=>a.name===S.reb.acct) || S.accounts[0]; }
-/* 리밸런싱 행이 어느 시장 종목인지 — 자산군으로 먼저 보고, 애매하면 고른 계좌를 따릅니다. */
+/* 리밸런싱 행의 종목이 어느 시장에 상장돼 있는지.
+   자산군으로 정하면 안 됩니다 — 'TIGER 미국S&P500'처럼 미국에 투자하지만 국내에 상장된
+   종목이 많아서, 자산군이 '미국주식'이라고 미국 시장을 뒤지면 못 찾습니다.
+   그래서 이미 가진 종목이면 그 종목이 담긴 계좌를, 아니면 고른 계좌를 따릅니다. */
 function rebMarket(r){
-  const c = r && r.cls;
-  if(c==='가상화폐') return 'CRYPTO';
-  if(c==='미국주식' || c==='미국채권') return 'US';
-  if(c==='한국주식' || c==='한국채권') return 'KR';
-  const a = rebAcct();
+  const k = nameKey((r && r.name) || '');
+  const code = ((r && r.code) || '').trim();
+  const h = allHoldings().find(x=>(code && x.h.c===code) || (k && nameKey(x.h.n)===k));
+  if(h) return marketOf(h);
+  if(r && r.cls==='가상화폐') return 'CRYPTO';
+  /* 추가 매수는 원화 계좌에서만 고르므로 국내로 봅니다. */
+  const a = S.reb.mode==='cash' ? null : rebAcct();
   return a ? marketOf(a) : 'KR';
 }
 
@@ -1376,7 +1389,12 @@ function bindReb(){
   /* 행은 표가 비어 있을 때만 자동으로 만듭니다(renderReb). 적어둔 내용을 말없이 지우지 않도록,
      이미 행이 있으면 그대로 두고 '배분 항목으로 행 만들기'를 눌렀을 때만 새로 깝니다. */
   $('#rbPreset').onchange = e=>{ S.reb.preset=e.target.value; S.activePreset=e.target.value; markDirty(); renderAll(); renderReb(); };
-  $('#rbMode').onchange   = e=>{ S.reb.mode=e.target.value; markDirty(); renderReb(); };
+  $('#rbMode').onchange   = e=>{
+    const prev = S.reb.mode; S.reb.mode = e.target.value;
+    /* 적어 넣는 값의 뜻이 방식마다 다릅니다(최종 보유량 / 사야 할 양). 섞이지 않게 비웁니다. */
+    if(prev !== S.reb.mode) S.reb.rows.forEach(r=>{ r.target=''; });
+    markDirty(); renderReb();
+  };
   $('#rbBudget').oninput  = e=>{ S.reb.budget=num(e.target.value); markDirty(); clearTimeout(debT); debT=setTimeout(refreshReb,400); };
   $('#rbBudget').onblur   = ()=>{ $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR'); };
 
@@ -1886,14 +1904,14 @@ function acctNames(snaps){
 function acctSeries(snaps){
   const at = (x,n)=>((x.summary&&x.summary.accounts)||{})[n];
   const names = acctNames(snaps).filter(n=>snaps.some(x=>at(x,n)));
-  const last  = n => { const a = at(snaps[snaps.length-1], n); return a ? +a.value||0 : 0; };
-  const keep  = names.slice().sort((a,b)=>last(b)-last(a)).slice(0, ACCT_COLOR.length);
   const rows  = n => snaps.map(x=>{ const a=at(x,n); return a ? {cost:+a.cost||0, value:+a.value||0} : null; });
 
-  const series = names.filter(n=>keep.includes(n))
+  /* 앞에서부터 여덟 곳만 그리고 나머지는 묶습니다. 금액 순위로 고르면 순위가 바뀔 때마다
+     남아 있는 계좌의 색까지 밀려서 바뀌므로, 설정해 둔 계좌 순서를 그대로 씁니다. */
+  const series = names.slice(0, ACCT_COLOR.length)
     .map((n,i)=>({ name:n, color:ACCT_COLOR[i], rows:rows(n) }));
 
-  const etc = names.filter(n=>!keep.includes(n));
+  const etc = names.slice(ACCT_COLOR.length);
   if(etc.length) series.push({ name:`${ETC_NAME} ${etc.length}곳`, color:ETC_COLOR,
     rows: snaps.map((x,j)=>etc.reduce((s,n)=>{ const a=rows(n)[j]; return a ? {cost:s.cost+a.cost, value:s.value+a.value} : s; }, {cost:0,value:0})) });
   return series;
