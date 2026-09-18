@@ -611,13 +611,25 @@ function normalize(st){
   /* 계좌 식별자 — 없으면 붙입니다. 이미 시점 기록에 id 가 남아 있는 계좌라면(전에 저장해 둔
      시점) 그 id 를 물려받습니다. 안 그러면 같은 계좌가 새 id 를 받아 옛 기록과 끊깁니다. */
   const idUsed = new Set();
+  /* 기록은 그 시점의 이름으로 저장되어 있습니다. 이름을 바꾼 뒤라면(또는 옛 시점을 복원해
+     이름을 지금 이름으로 맞춘 뒤라면) 지금 이름과 열쇠가 다르므로, 물려 둔 연결을 따라
+     같은 계좌인지도 봅니다. 그러지 않으면 id 가 남아 있는 기록을 놓치고 새 id 를 발급해
+     계열이 다시 갈라집니다. 정확히 같은 이름을 먼저, 그다음 연결로 이어지는 이름을 봅니다. */
+  const aliasEnd = n => { const m = st.aliases; let t=n;
+    for(let i=0; i<20 && m[t] && m[t]!==t; i++) t=m[t]; return t; };
   const idFromSnaps = name => {
     const snaps = Array.isArray(SNAPS) ? SNAPS : [];
-    for(const x of snaps){
-      const e = ((x && x.summary && x.summary.accounts) || {})[name];
-      if(e && e.id && !idUsed.has(e.id)) return e.id;
-    }
-    return '';
+    const scan = pick => {
+      for(const x of snaps){
+        const acc = (x && x.summary && x.summary.accounts) || {};
+        for(const k of Object.keys(acc)){
+          const e = acc[k];
+          if(e && e.id && !idUsed.has(e.id) && pick(k)) return e.id;
+        }
+      }
+      return '';
+    };
+    return scan(k=>k===name) || scan(k=>aliasEnd(k)===name);
   };
   st.accounts.forEach(a=>{
     let id = typeof a.id === 'string' ? a.id.trim() : '';
@@ -633,16 +645,22 @@ function normalize(st){
       if(key && MKTS.includes(st.mkts[k])) mk[key] = st.mkts[k];
     });
   st.mkts = mk;
-  /* 아직 대장에 없는 코드는 '그 코드를 담고 있는 계좌'로 채워 넣습니다. 달러 계좌에 있으면
-     미국, 가상자산 계좌에 있으면 코인 — 지금까지 시세가 제대로 나왔다는 것이 곧 근거입니다.
-     한 코드가 통화가 다른 계좌 양쪽에 걸쳐 있으면 근거가 못 되니 코드 모양으로 가늠합니다. */
+  /* 아직 대장에 없는 코드를 채웁니다. 순서가 중요합니다.
+     ① 코드 모양이 확실히 말해 주면 그것을 씁니다(codeMarketSure).
+        계좌로 정하면, 원화 계좌에 해외 코드가 잘못 들어 있을 때 그 코드를 영구히 '국내'로
+        박아 버립니다. 그러면 통화 안 맞음 경고도 안 뜨고, 시세 출처가 googlefinance 처럼
+        국내·해외 겸용이면 나중에도 바로잡히지 않습니다.
+     ② 모양으로 정할 수 없는 코드(4자리 숫자 같은 것)만 '그 코드를 담고 있는 계좌'로 봅니다.
+        통화가 다른 계좌 양쪽에 걸쳐 있으면 근거가 못 되니 마지막으로 코드 모양을 씁니다. */
   const seen = {};
   st.accounts.forEach(a=>a.h.forEach(h=>{
     const k = mktKey(h.c); if(!k || h.m || st.mkts[k]) return;
     const m = marketOf(a);
     seen[k] = (seen[k] && seen[k]!==m) ? '?' : m;
   }));
-  Object.keys(seen).forEach(k=>{ st.mkts[k] = MKTS.includes(seen[k]) ? seen[k] : codeMarket(k); });
+  Object.keys(seen).forEach(k=>{
+    st.mkts[k] = codeMarketSure(k) || (MKTS.includes(seen[k]) ? seen[k] : codeMarket(k));
+  });
   return st;
 }
 
@@ -1388,6 +1406,20 @@ function codeMarket(code){
   if(/^(BTC|USDT)-[A-Z0-9]+$/.test(c)) return 'CRYPTO_ALT';
   if(/^\d{6}$/.test(c)) return 'KR';
   return 'US';
+}
+/* 코드 모양이 '확실히' 말해 주는 시장. 애매하면 빈 값을 돌려줍니다.
+   · KRW-/BTC-/USDT- 로 시작 → 업비트 마켓
+   · 6자리 숫자 → 국내
+   · 알파벳 티커(BRK-B, BF.B 처럼 붙는 것 포함) → 해외
+   그 밖(4자리 숫자 같은 것)은 코드만 보고 정할 수 없습니다. codeMarket 은 이때 'US' 로
+   넘겨짚지만, 넘겨짚은 값을 대장에 영구히 적어서는 안 되므로 여기서는 구분해 둡니다. */
+function codeMarketSure(code){
+  const c = mktKey(code);
+  if(!c) return '';
+  if(/^(KRW|BTC|USDT)-[A-Z0-9]+$/.test(c)) return codeMarket(c);
+  if(/^\d{6}$/.test(c)) return 'KR';
+  if(/^[A-Z]+([.\-][A-Z]{1,2})?$/.test(c)) return 'US';
+  return '';
 }
 /* 이 코드의 시장 — 대장이 먼저, 없으면 코드 모양으로 가늠합니다. */
 function marketOfCode(code){
@@ -2138,7 +2170,7 @@ async function updatePrices(){
   S.reb.rows.forEach(r=>{ const c=(r.code||'').trim(); if(c) codes.add(c); });
   const t = toast(`<span class="spin"></span>종목 시세와 환율을 불러오는 중…`, '', 60000);
 
-  let failN=0, fails=[], badMkt=[];
+  let failN=0, fails=[], badMkt=[], badCur=[];
   try{
     const [q,f] = await Promise.allSettled([
       codes.size ? api('quotes',{ items:[...codes].map(c=>({code:c})) }) : Promise.resolve({quotes:[]}),
@@ -2154,7 +2186,23 @@ async function updatePrices(){
         if(h.m||!h.c||!h.c.trim()) return;
         const code=h.c.trim(), r=map[code];
         /* 시세가 실제로 어디서 왔는지가 이 코드의 시장을 알려주는 가장 확실한 근거입니다. */
-        if(r&&r.ok){ setCodeMarket(code, srcMarket(r.src, code)); h.p=r.price; h.ps=r.src; h.pe=''; if(r.name) h.pn=r.name; }
+        if(r&&r.ok){
+          setCodeMarket(code, srcMarket(r.src, code));
+          /* 받아온 단가의 통화가 이 계좌의 통화와 다르면 넣지 않습니다. 넣으면 그 종목만이
+             아니라 계좌 평가액과 이후 시점 기록까지 환율(또는 코인 시세)만큼 틀어집니다.
+             업비트 BTC·USDT 마켓처럼 통화를 아예 모르는 경우도 같습니다. */
+          const pcur = marketCur(marketOfCode(code));
+          if(pcur !== a.cur){
+            h.ps=''; badCur.push(`${h.n||code}(${code})`);
+            h.pe = pcur
+              ? `이 코드의 시세는 ${pcur} 로 오는데 계좌 통화는 ${a.cur} 입니다. 평가액이 틀어지므로 현재가를 넣지 않았습니다. 코드를 고치거나 계좌 통화를 확인해주세요.`
+              : `이 코드의 시세가 어느 통화로 오는지 알 수 없습니다(업비트 BTC·USDT 마켓 등). 원화로 환산할 수 없어 현재가를 넣지 않았습니다. 원화 마켓(KRW-…) 코드로 바꿔주세요.`;
+            if(r.name) h.pn=r.name;
+            return;
+          }
+          h.p=r.price; h.ps=r.src; h.pe=''; if(r.name) h.pn=r.name;
+          return;
+        }
         else {
           h.ps=''; failN++;
           h.pe = r ? (r.err||r.error||r.msg||`서버가 '${code}' 시세를 찾지 못했습니다. 코드 형식(국내 6자리 숫자 / 해외 티커)과 ${a.cur==='USD'?'미국':'한국'} 시장이 맞는지 확인해주세요.`)
@@ -2182,8 +2230,12 @@ async function updatePrices(){
     S.updatedAt = new Date().toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
     markDirty(); renderAll();
     t.remove();
-    toast(`시세 갱신 완료` + ((failN||badMkt.length)?` · <b>일부 조회 실패</b>`:'') + (noCode?` · 코드 없는 종목 있음`:''), (failN||badMkt.length||noCode)?'':'ok', 4600);
+    const bad = failN + badMkt.length + badCur.length;
+    toast(`시세 갱신 완료` + (bad?` · <b>일부 조회 실패</b>`:'') + (noCode?` · 코드 없는 종목 있음`:''), (bad||noCode)?'':'ok', 4600);
     if(fails.length) toast('조회 실패: '+fails.slice(0,6).join(', ')+(fails.length>6?` 외 ${fails.length-6}개`:'')+'<br>설정 → 종목코드 화면에서 <b>미조회</b> 옆에 사유가 나옵니다.','err',7500);
+    if(badCur.length) toast(`${badCur.slice(0,4).join(', ')}${badCur.length>4?` 외 ${badCur.length-4}개`:''}는 `
+      + `시세의 통화가 그 계좌의 통화와 달라 현재가를 넣지 않았습니다. 넣으면 계좌 평가액까지 틀어집니다.`
+      + `<br>설정 → 종목코드 화면의 <b>통화 안 맞음</b> 옆에 사유가 나옵니다.`,'err',8000);
     if(badMkt.length) toast(`리밸런싱 표의 ${badMkt.slice(0,4).join(', ')}${badMkt.length>4?` 외 ${badMkt.length-4}개`:''}는 `
       + `${rebWhere()}에서 쓸 수 없는 코드여서 현재가를 넣지 않았습니다.`
       + `<br>코드를 고치거나 <b>새 종목 코드·시세 찾기</b>로 다시 찾아주세요.`,'err',8000);
