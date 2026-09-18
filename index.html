@@ -1392,13 +1392,25 @@ function acctModal(ai, newGrp){
    환산할 방법이 없어서, 통화를 '모름'으로 두고 어떤 계획에도 쓰지 않습니다. */
 const MKTS = ['KR','US','CRYPTO','CRYPTO_ALT'];
 const MKT_CUR = { KR:'KRW', US:'USD', CRYPTO:'KRW', CRYPTO_ALT:'' };
+/* GOOGLEFINANCE 는 거래소 접두사가 붙은 코드도 받습니다(KRX:005930, NASDAQ:NVDA).
+   서버도 국내 코드를 재조회할 때 KRX: 를 붙여 씁니다. 접두사가 곧 시장이라,
+   이런 코드는 뒤를 볼 필요 없이 확실합니다. */
+const MKT_PREFIX = { KRX:'KR', KOSPI:'KR', KOSDAQ:'KR', KONEX:'KR',
+                     NASDAQ:'US', NYSE:'US', NYSEARCA:'US', NYSEAMERICAN:'US',
+                     AMEX:'US', BATS:'US', OTCMKTS:'US' };
 const mktKey = code => String(code||'').trim().toUpperCase();
+/* 거래소 접두사가 있으면 그 시장 — 없으면 빈 값 */
+function prefixMarket(code){
+  const c = mktKey(code), i = c.indexOf(':');
+  return i > 0 ? (MKT_PREFIX[c.slice(0,i)] || '') : '';
+}
 
 /* 코드 모양만 보고 가늠합니다 — 대장에 아직 없을 때의 마지막 수단입니다.
    국내는 6자리 숫자, 코인은 KRW-BTC 형태, 그 밖에는 해외 티커입니다. */
 function codeMarket(code){
   const c = mktKey(code);
   if(!c) return '';
+  const p = prefixMarket(c); if(p) return p;      /* KRX:005930 처럼 거래소를 밝힌 코드 */
   /* 코인은 업비트가 실제로 쓰는 기준 통화 접두사만 인정합니다.
      하이픈이 있으면 코인으로 보던 예전 규칙은 BRK-B 같은 미국 티커까지 코인으로 만들었습니다.
      원화 마켓만 시세가 원화로 오고, BTC·USDT 마켓은 그 코인/달러코인 기준 값이 옵니다. */
@@ -1416,6 +1428,7 @@ function codeMarket(code){
 function codeMarketSure(code){
   const c = mktKey(code);
   if(!c) return '';
+  const p = prefixMarket(c); if(p) return p;      /* 거래소를 밝힌 코드는 그 자체가 근거 */
   if(/^(KRW|BTC|USDT)-[A-Z0-9]+$/.test(c)) return codeMarket(c);
   if(/^\d{6}$/.test(c)) return 'KR';
   if(/^[A-Z]+([.\-][A-Z]{1,2})?$/.test(c)) return 'US';
@@ -1779,10 +1792,15 @@ function num(x){ const n=parseFloat(String(x??'').replace(/,/g,'')); return isFi
 function bindReb(){
   $('#rbAcct').onchange   = e=>{
     S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0;
-    /* 계좌를 바꾸면 사고파는 곳이 바뀝니다. 그 계좌에서 쓸 수 없는 코드·단가를 비웁니다. */
+    /* 계좌를 바꾸면 사고파는 곳이 바뀝니다. 그 계좌에서 쓸 수 없는 코드·단가를 비우고,
+       앞 계좌에서 가져온 보유량도 비웁니다(그 수량은 이 계좌 것이 아닙니다). */
     const cut = dropUnfitCodes();
+    const had = S.reb.rows.filter(r=>+r.have).length;
+    S.reb.rows.forEach(r=>{ r.have = 0; });
     markDirty(); renderReb();
-    if(cut) toast(`${rebWhere()}에서는 쓸 수 없는 ${cut}개 행의 코드·현재가를 비웠습니다.`,'',5600);
+    if(cut || had)
+      toast((cut?`${rebWhere()}에서는 쓸 수 없는 ${cut}개 행의 코드·현재가를 비웠습니다. `:'')
+            + (had?`보유량도 비웠습니다. <b>현재 보유량·현재가 불러오기</b>를 눌러 채워주세요.`:''),'',5600);
   };
   /* 목표 배분을 바꾸면, 그 배분에 적어 둔 기본 구성이 있으면 그대로 불러옵니다.
      적어 둔 것이 없으면 지금 표를 건드리지 않습니다(적어둔 내용을 말없이 지우지 않도록). */
@@ -1807,6 +1825,8 @@ function bindReb(){
     const f=e.target.dataset.rf; if(!f || f==='pick') return;   /* 종목 고르기는 change 에서 처리합니다 */
     const i=+e.target.closest('tr').dataset.i;
     const r=S.reb.rows[i];
+    /* 첫 글자를 넣을 때 '고치기 전 코드'를 적어 둡니다. 칸을 벗어날 때 달라졌는지 봅니다. */
+    if(f==='code' && e.target.dataset.wasCode == null) e.target.dataset.wasCode = r.code || '';
     r[f] = (f==='name'||f==='code'||f==='cls') ? e.target.value
          : (f==='wOverride'||f==='target') ? e.target.value : num(e.target.value);
     markDirty();
@@ -1819,19 +1839,28 @@ function bindReb(){
     if(f==='cls'){ S.reb.mode==='cash' ? renderReb() : refreshReb(); return; }   /* 자산군이 바뀌면 고를 수 있는 종목도 바뀝니다 */
     /* 코드를 다 적고 칸을 벗어나는 순간 대장에 올립니다(한 글자마다 올리면 엉뚱한 값이 쌓입니다). */
     if(f==='code'){
-      const r = S.reb.rows[+e.target.closest('tr').dataset.i];
+      const tr = e.target.closest('tr');
+      const r = S.reb.rows[+tr.dataset.i];
       const code = (e.target.value||'').trim();
+      const was = e.target.dataset.wasCode;            /* 고치기 전 코드 */
+      delete e.target.dataset.wasCode;
+      /* 지금 들고 있는 단가는 '고치기 전 코드'의 값입니다. 코드가 달라졌으면 시장이 같아도
+         다른 종목의 단가이므로 버립니다. 예전에는 시장이 다를 때만 버려서, 국내 종목을
+         다른 국내 종목으로 바꾸면 앞 종목 단가로 계속 셈했습니다. */
+      const changed = was != null && was !== code;
+      let why = '';
       if(code){
         setCodeMarket(code);
-        if(!codeFitsReb(code)){
-          r.price = 0;                                   /* 앞 종목의 단가가 남아 있으면 안 됩니다 */
-          /* refreshReb 는 입력칸을 다시 쓰지 않으므로, 비운 단가를 화면에도 직접 반영합니다.
-             안 그러면 셈에는 0 이 쓰이는데 화면에는 옛 단가가 남아 보입니다. */
-          const pi = e.target.closest('tr').querySelector('[data-rf="price"]');
-          if(pi) pi.value = 0;
-          toast(`<b>${esc(code)}</b> — ${rebWhere()}에서는 쓸 수 없는 코드입니다.`
-                + ` 현재가를 비웠습니다.`, 'err', 6000);
-        }
+        if(!codeFitsReb(code)) why = `<b>${esc(code)}</b> — ${rebWhere()}에서는 쓸 수 없는 코드입니다.`;
+      }
+      if(changed || why){
+        r.price = 0;
+        /* refreshReb 는 입력칸을 다시 쓰지 않으므로, 비운 단가를 화면에도 직접 반영합니다.
+           안 그러면 셈에는 0 이 쓰이는데 화면에는 옛 단가가 남아 보입니다. */
+        const pi = tr.querySelector('[data-rf="price"]');
+        if(pi) pi.value = 0;
+        toast((why || `코드를 바꿨으니 <b>${esc(was||'')}</b> 의 현재가는 버렸습니다.`)
+              + ` <b>새 종목 코드·시세 찾기</b>로 새 단가를 받아주세요.`, why?'err':'', why?6000:4600);
       }
       markDirty(); refreshReb(); return;
     }
@@ -1879,9 +1908,11 @@ function bindReb(){
     S.reb.rows.forEach(r=>{
       const h = a.h.find(x=>(r.code&&x.c===r.code)||x.n===r.name);
       if(h){ r.have=+h.q||0; if(!(r.code||'').trim() && h.c) r.code=h.c; if(+h.p) r.price=+h.p; n++; return; }
-      /* 이 계좌에 없는 종목은 보유량 0. 다른 계좌에서 코드와 현재가를 빌려올 때는 통화를 봅니다.
-         달러 계좌 단가를 원화 계좌 계획에 넣으면 매수량이 환율만큼 부풀어 오릅니다. */
-      r.have = +r.have||0;
+      /* 이 계좌에 없는 종목은 보유량 0 — 예전에는 값을 그대로 두어, 계좌 A 로 채운 표를
+         계좌 B 로 바꿔 불러오면 B 에 없는 A 의 수량이 배분 대상과 매도량에 그대로 남았습니다.
+         다른 계좌에서 코드와 현재가를 빌려올 때는 통화를 봅니다. 달러 계좌 단가를
+         원화 계좌 계획에 넣으면 매수량이 환율만큼 부풀어 오릅니다. */
+      r.have = 0;
       if(r.price>0 && (r.code||'').trim()) return;
       const k = nameKey(r.name||'');
       const y = allHoldings().find(z=>((r.code&&z.h.c===r.code) || (k && nameKey(z.h.n)===k)) && (z.h.c || +z.h.p>0));
