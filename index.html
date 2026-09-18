@@ -1053,22 +1053,24 @@ function uniqueAcctName(name, skip, ownName){
   const base = String(name==null?'':name).trim() || '이름 없음';
   /* 이름칸을 직접 고칠 때는 글자마다 계좌 이름이 바뀌므로, '편집 전 이름'을 따로 받습니다. */
   const own = ownName != null ? ownName : (skip>=0 ? (S.accounts[skip]||{}).name : null);
-  const retired = n => {
-    const m = S.aliases || {};
-    if(!Object.prototype.hasOwnProperty.call(m, n)) return false;
-    let t = n;
-    for(let i=0; i<20 && m[t] && m[t]!==t; i++) t = m[t];
-    return !(own && t === own);                  /* 내가 쓰던 옛 이름이면 막지 않습니다 */
-  };
-  /* 지운 계좌의 이름도 막습니다. 시점 기록에 그 이름이 남아 있는데 새 계좌에 같은 이름을
-     붙이면, 서로 다른 두 계좌가 하나의 이어진 기록으로 보입니다. */
+  const m = S.aliases || {};
+  const chainEnd = n => { let t=n; for(let i=0; i<20 && m[t] && m[t]!==t; i++) t=m[t]; return t; };
+  /* 이 이름이 '내가 쓰거나 쓰던 이름'인가 — 별칭 사슬로 나와 이어져 있으면 내 것이라, 막지 않습니다. */
+  const isMine = n => !!own && (n===own || chainEnd(n)===own);
   const inSnaps = n => SNAPS.some(x=>
     Object.prototype.hasOwnProperty.call((x.summary&&x.summary.accounts)||{}, n));
-  const taken = n => S.accounts.some((a,i)=> i!==skip && a.name===n)
-                  || retired(n)
-                  || (n !== own && inSnaps(n));
+  /* 막아야 하는 이름 — 지금 쓰는 이름 / 물려 둔 옛 이름 / 그 옛 이름이 가리키는 종착 이름
+     (계좌를 지워 지금은 아무도 안 쓰는 이름) / 시점 기록에 남아 있는 이름.
+     이 중 하나를 새 계좌에 붙이면 그 이름으로 남은 기록이 엉뚱한 계좌에 붙습니다. */
+  const taken = n => !isMine(n) && (
+       S.accounts.some((a,i)=> i!==skip && a.name===n)
+    || Object.prototype.hasOwnProperty.call(m, n)
+    || Object.values(m).includes(n)
+    || inSnaps(n));
   if(!taken(base)) return base;
-  for(let i=2; i<=S.accounts.length+2; i++){ const n = base+' '+i; if(!taken(n)) return n; }
+  for(let i=2; i<=S.accounts.length+SNAPS.length+Object.keys(m).length+2; i++){
+    const n = base+' '+i; if(!taken(n)) return n;
+  }
   return base + ' ' + Date.now();
 }
 
@@ -1319,10 +1321,21 @@ function switchRebMode(){
     const cut = before - S.reb.rows.length;
     if(cut) toast(`원화 계좌에 없는 종목 ${cut}개는 뺐습니다. 넣을 금액을 적어주세요.`,'',4600);
   } else {
-    /* 전체 재배분은 고른 계좌 하나를 기준으로 합니다. 계좌를 넘나들며 모은 보유량은 지웁니다. */
-    S.reb.rows.forEach(r=>{ r.have = 0; });
-    S.reb.budget = (rebAcct()||{}).cash || 0;
-    if(S.reb.rows.length) toast('보유량은 비웠습니다. <b>현재 보유량·현재가 불러오기</b>를 눌러 채워주세요.','',5200);
+    /* 전체 재배분은 고른 계좌 하나를 기준으로 합니다. 계좌를 넘나들며 모은 보유량은 지우고,
+       그 계좌 시장이 아닌 코드와 그 코드로 받아둔 단가도 버립니다. 추가 매수 행은 원화
+       기준이라, 고른 계좌가 달러 계좌면 원화 단가를 달러 예수금과 같은 단위로 셈하게 됩니다. */
+    const a = rebAcct();
+    const want = a ? marketOf(a) : 'KR';
+    let cut = 0;
+    S.reb.rows.forEach(r=>{
+      r.have = 0;
+      const mkt = (r.code||'').trim() ? codeMarket(r.code) : 'KR';   /* 코드가 없으면 원화 계좌에서 온 값 */
+      if(mkt !== want){ r.code=''; r.price=0; cut++; }
+    });
+    S.reb.budget = (a||{}).cash || 0;
+    if(S.reb.rows.length)
+      toast(`보유량을 비웠습니다.${cut?` 이 계좌 시장과 맞지 않는 ${cut}개 행의 코드·현재가도 비웠습니다.`:''}`
+            + ` <b>현재 보유량·현재가 불러오기</b>를 눌러 채워주세요.`, '', 5600);
   }
 }
 
@@ -1921,8 +1934,9 @@ async function updatePrices(){
         const x=map[code];
         if(x&&x.ok){
           /* 코드칸은 직접 고칠 수 있어서, 이 계획의 시장과 다른 코드가 들어올 수 있습니다.
-             그대로 넣으면 단가의 통화가 달라 매수 수량이 환율만큼 틀립니다. */
-          if(codeMarket(code)!==rebMarket(r)){ badMkt.push(`${r.name||code}(${code})`); return; }
+             그대로 넣으면 단가의 통화가 달라 매수 수량이 환율만큼 틀립니다.
+             들고 있던 단가도 이제 다른 종목 것이라 함께 버립니다. */
+          if(codeMarket(code)!==rebMarket(r)){ r.price=0; badMkt.push(`${r.name||code}(${code})`); return; }
           r.price=x.price; return;
         }
         /* 계좌에도 있는 코드는 위에서 이미 셌으니 두 번 세지 않습니다. */
