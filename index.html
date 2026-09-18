@@ -1352,8 +1352,10 @@ function debRender(){ clearTimeout(debT); debT=setTimeout(()=>{ const C=compute(
 
 /* 계좌 설정 모달. grp='가상자산' 이면 거래소·지갑으로 다룹니다. */
 function acctModal(ai, newGrp){
+  /* 새 계좌는 만드는 그 자리에서 id 를 받습니다. 다시 불러올 때까지 id 가 없으면,
+     그동안 만든 새 계좌들이 모두 같은 열쇠가 되어 그래프와 시점 기록에서 한 곳만 남습니다. */
   const a = ai>=0 ? S.accounts[ai]
-    : { name: newGrp==='가상자산' ? '새 거래소' : '새 계좌',
+    : { id:newAcctId(), name: newGrp==='가상자산' ? '새 거래소' : '새 계좌',
         cur:'KRW', grp:newGrp||'투자', cash:0, h:[] };
   const coin = a.grp==='가상자산';
   const what = coin ? '거래소·지갑' : '계좌';
@@ -2224,7 +2226,10 @@ async function updatePrices(){
              업비트 BTC·USDT 마켓처럼 통화를 아예 모르는 경우도 같습니다. */
           const pcur = marketCur(marketOfCode(code));
           if(pcur !== a.cur){
-            h.ps=''; badCur.push(`${h.n||code}(${code})`);
+            /* 새 시세만 거부하면, 들고 있던 단가로 계좌 평가액이 계속 셈됩니다
+               (코드를 다른 통화 시장 코드로 바꾼 경우, 계좌 통화를 바꾼 경우).
+               안내는 '현재가를 넣지 않았다'고 하는데 숫자는 옛 단가로 나오던 문제입니다. */
+            h.p=0; h.ps=''; badCur.push(`${h.n||code}(${code})`);
             h.pe = pcur
               ? `이 코드의 시세는 ${pcur} 로 오는데 계좌 통화는 ${a.cur} 입니다. 평가액이 틀어지므로 현재가를 넣지 않았습니다. 코드를 고치거나 계좌 통화를 확인해주세요.`
               : `이 코드의 시세가 어느 통화로 오는지 알 수 없습니다(업비트 BTC·USDT 마켓 등). 원화로 환산할 수 없어 현재가를 넣지 않았습니다. 원화 마켓(KRW-…) 코드로 바꿔주세요.`;
@@ -2436,10 +2441,13 @@ const ETC_NAME = '그 밖의 계좌';
    · id 를 남기기 전의 옛 기록은 이름으로 지금 계좌를 찾아(별칭 포함) 그 계좌의 id 에 붙입니다.
      그래서 옛 기록과 새 기록이 한 줄로 이어집니다.
    · 그 계좌가 이미 지워졌으면 이름 자체를 식별자로 씁니다. */
+/* 계좌 하나의 식별자. id 가 없는 계좌(만든 직후 등)는 이름으로 물러나, 여러 계좌가
+   'id:undefined' 라는 한 열쇠로 뭉치지 않게 합니다. */
+function acctKey(a){ return a && a.id ? 'id:' + a.id : 'nm:' + ((a && a.name) || ''); }
 function snapAcctId(name, ent){
   if(ent && ent.id) return 'id:' + ent.id;
   const a = S.accounts.find(x=>x.name===resolveAcct(name));
-  return a ? 'id:' + a.id : 'nm:' + resolveAcct(name);
+  return a ? acctKey(a) : 'nm:' + resolveAcct(name);
 }
 /* 그래프에 그릴 계좌 목록 — 식별자와 보여줄 이름을 짝지어 돌려줍니다. */
 function acctKeys(snaps){
@@ -2455,7 +2463,7 @@ function acctKeys(snaps){
       l = base + (i===1 ? ' (지난 기록)' : ` (지난 기록 ${i})`);
     seen.add(key); out.push({key, label:l});
   };
-  S.accounts.forEach(a=>add('id:'+a.id, a.name));      /* 설정해 둔 계좌 순서를 먼저 */
+  S.accounts.forEach(a=>add(acctKey(a), a.name));      /* 설정해 둔 계좌 순서를 먼저 */
   snaps.forEach(x=>{
     const acc = (x.summary&&x.summary.accounts)||{};
     Object.keys(acc).forEach(n=>add(snapAcctId(n, acc[n]), resolveAcct(n)));   /* 지금은 없는 옛 계좌는 뒤에 */
