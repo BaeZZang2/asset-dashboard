@@ -1917,11 +1917,21 @@ function bindReb(){
       r.have = 0;
       if(r.price>0 && (r.code||'').trim()) return;
       const k = nameKey(r.name||'');
-      const y = allHoldings().find(z=>((r.code&&z.h.c===r.code) || (k && nameKey(z.h.n)===k)) && (z.h.c || +z.h.p>0));
+      const cands = allHoldings().filter(z=>
+        ((r.code&&z.h.c===r.code) || (k && nameKey(z.h.n)===k)) && (z.h.c || +z.h.p>0));
+      /* 이름이 같아도 시장이 다른 종목이 있을 수 있으므로(원화 증권계좌와 원화 코인 지갑이
+         같은 이름을 쓰는 경우 등), 이 계획에서 쓸 수 있는 종목을 먼저 고릅니다. */
+      const y = cands.find(z=>(z.h.c||'').trim() && codeFitsReb(z.h.c)) || cands[0];
       if(!y) return;
+      const src = (y.h.c||'').trim();
+      const fits = !!src && codeFitsReb(src);
       let got = false;
-      if(!(r.code||'').trim() && y.h.c && codeFitsReb(y.h.c)){ r.code=y.h.c; got=true; }
-      if(!(r.price>0) && +y.h.p && y.cur===rebCur()){ r.price=+y.h.p; got=true; }
+      if(!(r.code||'').trim() && fits){ r.code=src; got=true; }
+      /* 단가는 시장까지 맞을 때만 빌립니다. 통화만 보면 원화 증권계좌 계획에 원화 코인
+         지갑의 단가가 그대로 들어옵니다(둘 다 원화라 통화 검사는 통과합니다).
+         코드를 확인할 수 없는 종목(코드 없이 금액만 적어 둔 것)에서도 빌리지 않습니다. */
+      if(!(r.price>0) && +y.h.p && fits && y.cur===rebCur()
+         && (!(r.code||'').trim() || (r.code||'').trim()===src)){ r.price=+y.h.p; got=true; }
       if(got) lent++;
     });
     S.reb.budget = +a.cash||0;
@@ -2508,8 +2518,18 @@ function acctSeries(snaps){
     .map((o,i)=>({ name:o.label, color:ACCT_COLOR[i], rows:rows(o.key) }));
 
   const etc = keys.slice(ACCT_COLOR.length);
-  if(etc.length) series.push({ name:`${ETC_NAME} ${etc.length}곳`, color:ETC_COLOR,
-    rows: snaps.map((x,j)=>etc.reduce((s,o)=>{ const a=rows(o.key)[j]; return a ? {cost:s.cost+a.cost, value:s.value+a.value} : s; }, {cost:0,value:0})) });
+  if(etc.length){
+    const etcRows = etc.map(o=>rows(o.key));        /* 시점마다 다시 만들지 않습니다 */
+    series.push({ name:`${ETC_NAME} ${etc.length}곳`, color:ETC_COLOR,
+      /* 묶인 계좌가 하나도 없던 시점은 빈칸으로 둡니다. 0 으로 두면 나중에 만든 계좌나
+         중간에 지운 계좌 때문에 그래프가 0 에서 솟거나 0 으로 떨어진 것처럼 보이고,
+         마지막 시점 표에도 없던 잔액 0 원이 적힙니다. */
+      rows: snaps.map((x,j)=>{
+        let any=false, cost=0, value=0;
+        etcRows.forEach(rs=>{ const a=rs[j]; if(!a) return; any=true; cost+=a.cost; value+=a.value; });
+        return any ? {cost, value} : null;
+      }) });
+  }
   return series;
 }
 
