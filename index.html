@@ -515,7 +515,9 @@ let autoT    = null;                 // 자동 저장 대기 타이머
 let syncNote = '';                   // 화면에 보여줄 동기화 상태
 
 function persist(){ LS.set('ad.state', S); }
-function markDirty(){ dirty = true; persist(); updateSaveBtn(); queueAutoSave(); }
+/* quiet: 편집이 끝나지 않은 값이라 서버로 올리지는 않습니다(이 기기에만 적어 둠).
+   dirty 는 그대로 켜 두므로, 편집을 끝내는 순간 자동 저장이 다시 예약됩니다. */
+function markDirty(quiet){ dirty = true; persist(); updateSaveBtn(); if(!quiet) queueAutoSave(); }
 
 function canSync(){ return !!CFG.url; }
 function queueAutoSave(){
@@ -574,6 +576,30 @@ function normalize(st){
       q:+h.q||0, b:+h.b||0, m:!!h.m, v:+h.v||0, p:+h.p||0, ps:h.ps||'', pn:h.pn||'', pe:h.pe||''
     }));
   });
+  /* 예전 데이터에 같은 이름의 계좌가 남아 있으면, 불러올 때 한 번 이름을 갈라 둡니다.
+     시점 기록의 열쇠는 계좌 이름입니다. 이름이 같으면 저장할 때 배열 순서로 'A'와 'A 2'를
+     나눠 갖게 되므로, 계좌 순서를 바꾸거나 앞 계좌를 지우고 다음 시점을 저장하면 같은
+     열쇠가 다른 계좌에 붙어 계좌별 그래프의 값이 중간에서 맞바뀝니다.
+     이름을 상태에 적어 두면 그 뒤로는 순서와 무관해집니다.
+     먼저 있는 계좌가 원래 이름을 지켜 옛 기록을 그대로 이어받고, 뒤 계좌는 새 이름이므로
+     별칭을 적지 않습니다(적으면 남의 기록을 물려받습니다). */
+  const takenName = new Set();
+  const reserved = new Set([...Object.keys(st.aliases), ...Object.values(st.aliases)]);
+  (Array.isArray(SNAPS)?SNAPS:[]).forEach(x=>
+    Object.keys((x && x.summary && x.summary.accounts) || {}).forEach(n=>reserved.add(n)));
+  const splitNames = [];
+  st.accounts.forEach(a=>{
+    const nm = String(a.name==null?'':a.name).trim() || '이름 없음';
+    a.name = nm;
+    if(!takenName.has(nm)){ takenName.add(nm); return; }
+    let n = nm;
+    for(let i=2; takenName.has(n) || reserved.has(n); i++) n = nm+' '+i;
+    a.name = n; takenName.add(n); splitNames.push(nm+' → '+n);
+  });
+  if(splitNames.length)
+    toast(`이름이 같은 계좌가 있어 갈라 두었습니다: ${esc(splitNames.join(', '))}`
+          + `<br>시점 기록이 섞이지 않게 하려는 것입니다. 원하는 이름으로 고쳐 주세요.`, '', 9000);
+
   /* 종목 시장 대장 — 적혀 있는 값만 남깁니다. */
   const mk = {};
   if(st.mkts && typeof st.mkts==='object' && !Array.isArray(st.mkts))
@@ -1107,7 +1133,9 @@ function resolveAcct(name){
 
 /* 이름만 바꿉니다. 옛 이름 → 지금 이름 연결(별칭)은 편집을 끝낼 때(commit)만 적습니다.
    이름칸을 직접 고칠 때는 글자마다 이 함수가 불리는데, 그때마다 별칭을 적으면
-   'ㅌ','토','토스'처럼 조각난 이름들이 줄줄이 쌓입니다. */
+   'ㅌ','토','토스'처럼 조각난 이름들이 줄줄이 쌓입니다.
+   편집이 끝나기 전에 저장이 나가는 문제는 commitAcctName 을 저장 직전에 부르는 것으로
+   막습니다 — 서버에는 '마무리된 이름 + 연결'만 나갑니다. */
 function renameAcct(ai, name, opt){
   const a = S.accounts[ai]; if(!a) return '';
   const prev = a.name;
@@ -1120,8 +1148,31 @@ function renameAcct(ai, name, opt){
     delete S.aliases[name];
   }
   if(S.reb.acct === prev) S.reb.acct = name;
-  markDirty();
+  markDirty(opt && opt.draft);
   return name;
+}
+
+/* 계좌 이름칸 편집을 마무리합니다 — 칸을 빠져나갈 때(change)와 저장 직전 둘 다 여기를 지납니다.
+   지금 쓰는 이름, 그리고 이름을 바꿔 물려 둔 옛 이름은 다시 쓸 수 없습니다.
+   옛 이름을 다른 계좌에 붙이면 그 이름으로 남아 있던 기록이 엉뚱한 계좌에 붙습니다. */
+function commitAcctName(t){
+  const ai = +t.dataset.acct;
+  if(!S.accounts[ai]) { delete t.dataset.was; return ''; }
+  const was = t.dataset.was != null ? t.dataset.was : S.accounts[ai].name;
+  const typed = (t.value||'').trim() || '이름 없음';
+  const v = renameAcct(ai, uniqueAcctName(typed, ai, was), { commit:true, was });
+  t.value = v; t.style.width = acctNameW(v)+'ch'; delete t.dataset.was;
+  if(v !== typed)
+    toast(`<b>${esc(typed)}</b>은(는) 다른 계좌가 쓰고 있거나 예전에 쓰던 이름이어서 <b>${esc(v)}</b>으로 두었습니다.`,'',5600);
+  return v;
+}
+
+/* 고치는 중인 계좌 이름칸이 있으면 먼저 마무리합니다.
+   이름칸을 고치는 동안 자동 저장이나 '앱을 떠날 때' 저장이 나가면, 서버에는 아직 다 적지
+   않은 이름만 남고 옛 이름 연결은 없는 상태가 됩니다. 그러면 그 계좌의 시점 기록이
+   영구히 두 줄로 갈라집니다. 올리기 전에 마무리해서 이름과 연결을 늘 함께 보냅니다. */
+function flushAcctNameEdits(){
+  $$('[data-acct]').forEach(t=>{ if(t.dataset && t.dataset.was != null) commitAcctName(t); });
 }
 
 /* 화면을 다시 만들지 않고 코드칸 값만 상태와 맞춥니다(포커스 유지). */
@@ -1171,7 +1222,9 @@ function bindPanels(sel){
     if(t.dataset.acct!=null){
       /* 첫 글자를 넣을 때 '편집 전 이름'을 적어 둡니다. 편집을 끝낼 때 여기서부터 이어 줍니다. */
       if(t.dataset.was == null) t.dataset.was = S.accounts[+t.dataset.acct].name;
-      renameAcct(+t.dataset.acct, t.value);
+      /* 아직 끝나지 않은 이름이라 서버로는 올리지 않습니다(draft).
+         올릴 일이 생기면 pushToSheet 이 먼저 commitAcctName 으로 마무리합니다. */
+      renameAcct(+t.dataset.acct, t.value, { draft:true });
       t.style.width = acctNameW(t.value)+'ch'; debRender(); return; }
     if(t.dataset.cash!=null){ const ai=+t.dataset.cash;
       S.accounts[ai].cash = num(t.value); markDirty(); refreshAcct(ai); debRender(); return; }
@@ -1191,16 +1244,7 @@ function bindPanels(sel){
   /* 칸을 빠져나갈 때(=Tab/클릭) 숫자 서식만 다시 입힙니다. 화면은 다시 그리지 않습니다. */
   root.addEventListener('change', e=>{
     const t=e.target;
-    if(t.dataset.acct!=null){ const ai=+t.dataset.acct;
-      const was = t.dataset.was != null ? t.dataset.was : S.accounts[ai].name;
-      const typed = t.value.trim() || '이름 없음';
-      /* 지금 쓰는 이름, 그리고 이름을 바꿔 물려 둔 옛 이름은 다시 쓸 수 없습니다.
-         옛 이름을 다른 계좌에 붙이면 그 이름으로 남아 있던 기록이 엉뚱한 계좌에 붙습니다. */
-      const v = renameAcct(ai, uniqueAcctName(typed, ai, was), { commit:true, was });
-      t.value = v; t.style.width = acctNameW(v)+'ch'; delete t.dataset.was;
-      if(v !== typed)
-        toast(`<b>${esc(typed)}</b>은(는) 다른 계좌가 쓰고 있거나 예전에 쓰던 이름이어서 <b>${esc(v)}</b>으로 두었습니다.`,'',5600);
-      debRender(); return; }
+    if(t.dataset.acct!=null){ commitAcctName(t); debRender(); return; }
     if(t.dataset.cash!=null){ const a=S.accounts[+t.dataset.cash];
       t.value = fmts(a.cur==='USD', a.grp==='가상자산').cost(+a.cash||0); return; }
     const f=t.dataset.f, tr=t.closest('tr'); if(!f||!tr) return;
@@ -1288,7 +1332,9 @@ const mktKey = code => String(code||'').trim().toUpperCase();
 function codeMarket(code){
   const c = mktKey(code);
   if(!c) return '';
-  if(/^[A-Za-z]{3,4}-[A-Za-z0-9]+$/.test(c)) return 'CRYPTO';
+  /* 코인은 업비트가 실제로 쓰는 기준 통화 접두사만 인정합니다.
+     하이픈이 있으면 코인으로 보던 예전 규칙은 BRK-B 같은 미국 티커까지 코인으로 만들었습니다. */
+  if(/^(KRW|BTC|USDT)-[A-Z0-9]+$/.test(c)) return 'CRYPTO';
   if(/^\d{6}$/.test(c)) return 'KR';
   return 'US';
 }
@@ -1325,12 +1371,23 @@ function rebAcct(){ return S.accounts.find(a=>a.name===S.reb.acct) || S.accounts
 /* 지금 계획이 셈하는 통화. 추가 매수는 넣을 금액이 원화이고,
    전체 재배분은 고른 계좌의 예수금 통화입니다. */
 function rebCur(){ return S.reb.mode==='cash' ? 'KRW' : ((rebAcct()||{}).cur==='USD' ? 'USD' : 'KRW'); }
-/* 이 코드를 지금 계획에 쓸 수 있나 — 기준은 '시장'이 아니라 '단가의 통화' 하나입니다.
-   숫자를 망가뜨리는 것은 통화 차이뿐이고(달러 단가를 원화 자리에 넣으면 환율만큼 틀립니다),
-   원화끼리는 국내주식이든 코인이든 같은 자리에서 더해도 맞습니다. */
-function codeFitsReb(code){
-  const m = marketOfCode(code);
-  return !m || marketCur(m) === rebCur();
+/* 이 시장을 지금 계획에 쓸 수 있나 — 방식마다 따지는 것이 다릅니다.
+   · 전체 재배분: 고른 계좌 하나에서 사고팝니다. 그 계좌가 붙은 시장이어야 실제로 실행할 수
+     있습니다. 통화만 보면 원화 증권계좌 계획에 코인이, 코인 지갑 계획에 국내주식이 들어와
+     그 계좌에서는 낼 수 없는 주문이 나옵니다.
+   · 추가 매수: 계좌를 넘나들며 원화로 셈하므로, 원화로 오는 시세면 됩니다. */
+function marketFitsReb(m){
+  if(!m) return true;                                /* 모르는 것은 막지 않습니다 */
+  if(S.reb.mode==='cash') return marketCur(m)==='KRW';
+  const a = rebAcct();
+  return a ? m === marketOf(a) : marketCur(m)===rebCur();
+}
+function codeFitsReb(code){ return marketFitsReb(marketOfCode(code)); }
+/* 지금 계획이 실제로 사고파는 곳 — 안내 문구에 씁니다. */
+function rebWhere(){
+  if(S.reb.mode==='cash') return '원화로 셈하는 추가 매수';
+  const a = rebAcct();
+  return a ? `<b>${esc(a.name)}</b> 계좌` : '이 계획';
 }
 
 /* 리밸런싱 행의 종목을 어느 시장에서 '찾을지' — 검색에만 씁니다.
@@ -1341,13 +1398,12 @@ function codeFitsReb(code){
    자산군으로 정하면 안 됩니다 — 'TIGER 미국S&P500'처럼 미국에 투자하지만 국내에 상장된
    종목이 많아서, 자산군이 '미국주식'이라고 미국 시장을 뒤지면 못 찾습니다. */
 function rebMarket(r){
-  const cur = rebCur();
-  const fits = m => !!m && marketCur(m)===cur;
+  const fits = m => !!m && marketFitsReb(m);
   const code = ((r && r.code) || '').trim();
   const known = code ? marketOfCode(code) : '';
   if(fits(known)) return known;                       /* 대장에 적힌 시장이 가장 먼저 */
-  /* 코인은 업비트 시세가 원화로만 나옵니다. 달러로 셈하는 계획에서는 쓸 수 있는 시장이
-     아예 없으므로 빈 값을 돌려주고, 검색 대상에서 빠집니다. */
+  /* 코인은 코인을 사고팔 수 있는 계획에서만 찾습니다. 그렇지 않으면 쓸 수 있는 시장이
+     아예 없다는 뜻으로 빈 값을 돌려주고, 검색 대상에서 빠집니다. */
   if(r && r.cls==='가상화폐') return fits('CRYPTO') ? 'CRYPTO' : '';
   /* 이름이 같은 보유 종목이 있으면 그 종목의 코드가 붙은 시장을 씁니다. */
   const k = nameKey((r && r.name) || '');
@@ -1355,8 +1411,9 @@ function rebMarket(r){
     const h = allHoldings().find(x=>x.h.c && nameKey(x.h.n)===k && fits(marketOfCode(x.h.c)));
     if(h) return marketOfCode(h.h.c);
   }
-  /* 그래도 모르면 이 계획의 통화에 맞는 기본 시장에서 찾습니다. */
-  return cur==='USD' ? 'US' : 'KR';
+  /* 그래도 모르면 이 계획이 실제로 매매하는 곳에서 찾습니다. */
+  const a = S.reb.mode==='cash' ? null : rebAcct();
+  return a ? marketOf(a) : (rebCur()==='USD' ? 'US' : 'KR');
 }
 
 /* 추가 매수 방식에서 고를 수 있는 종목 — 원화 계좌의 보유 종목을 이름으로 묶습니다.
@@ -1404,7 +1461,7 @@ function switchRebMode(){
   /* 방식이 바뀌면 셈하는 통화도 바뀝니다. 통화가 안 맞는 코드와 그 코드로 받아둔 단가는
      어느 방향이든 버립니다(전에는 전체 재배분으로 갈 때만 걸러서, 반대 방향에 빈틈이 있었습니다). */
   const cut = dropUnfitCodes();
-  if(cut) toast(`이 방식은 ${rebCur()==='USD'?'달러':'원화'}로 셈합니다. 통화가 맞지 않는 ${cut}개 행의 코드·현재가를 비웠습니다.`
+  if(cut) toast(`${rebWhere()}에서는 쓸 수 없는 ${cut}개 행의 코드·현재가를 비웠습니다.`
                 + ` <b>새 종목 코드·시세 찾기</b>로 다시 찾아주세요.`, '', 5600);
 }
 
@@ -1636,10 +1693,10 @@ function num(x){ const n=parseFloat(String(x??'').replace(/,/g,'')); return isFi
 function bindReb(){
   $('#rbAcct').onchange   = e=>{
     S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0;
-    /* 원화 계좌 ↔ 달러 계좌로 옮기면 셈하는 통화가 바뀝니다. 통화가 안 맞는 코드·단가를 비웁니다. */
+    /* 계좌를 바꾸면 사고파는 곳이 바뀝니다. 그 계좌에서 쓸 수 없는 코드·단가를 비웁니다. */
     const cut = dropUnfitCodes();
     markDirty(); renderReb();
-    if(cut) toast(`이 계좌는 ${rebCur()==='USD'?'달러':'원화'}로 셈합니다. 통화가 맞지 않는 ${cut}개 행의 코드·현재가를 비웠습니다.`,'',5600);
+    if(cut) toast(`${rebWhere()}에서는 쓸 수 없는 ${cut}개 행의 코드·현재가를 비웠습니다.`,'',5600);
   };
   /* 목표 배분을 바꾸면, 그 배분에 적어 둔 기본 구성이 있으면 그대로 불러옵니다.
      적어 둔 것이 없으면 지금 표를 건드리지 않습니다(적어둔 내용을 말없이 지우지 않도록). */
@@ -1686,8 +1743,8 @@ function bindReb(){
              안 그러면 셈에는 0 이 쓰이는데 화면에는 옛 단가가 남아 보입니다. */
           const pi = e.target.closest('tr').querySelector('[data-rf="price"]');
           if(pi) pi.value = 0;
-          toast(`<b>${esc(code)}</b>는 ${marketCur(marketOfCode(code))==='USD'?'달러':'원화'} 시세라`
-                + ` ${rebCur()==='USD'?'달러':'원화'}로 셈하는 이 계획에는 쓸 수 없습니다.`, 'err', 6000);
+          toast(`<b>${esc(code)}</b> — ${rebWhere()}에서는 쓸 수 없는 코드입니다.`
+                + ` 현재가를 비웠습니다.`, 'err', 6000);
         }
       }
       markDirty(); refreshReb(); return;
@@ -1696,8 +1753,11 @@ function bindReb(){
     /* 보유 종목에서 고르면 코드·현재가·보유량까지 함께 채웁니다. */
     const r = S.reb.rows[+e.target.closest('tr').dataset.i];
     const o = pickable(r.cls).find(x=>x.name===e.target.value);
+    /* 종목이 바뀌면 적어 둔 수량은 앞 종목의 것입니다. 그대로 두면 3만원짜리 10주가
+       50만원짜리 10주로 읽혀 필요 현금이 단가 차이만큼 뛴 채로 보입니다. */
+    if(o && o.name!==r.name) r.target='';
     if(o){ r.name=o.name; r.code=o.code; r.price=o.price; r.have=o.have; }
-    else { r.name=''; r.code=''; r.price=0; r.have=0; }
+    else { r.name=''; r.code=''; r.price=0; r.have=0; r.target=''; }
     markDirty(); renderReb();
   });
   $('#tReb').addEventListener('click', e=>{
@@ -2056,7 +2116,7 @@ async function updatePrices(){
     toast(`시세 갱신 완료` + ((failN||badMkt.length)?` · <b>일부 조회 실패</b>`:'') + (noCode?` · 코드 없는 종목 있음`:''), (failN||badMkt.length||noCode)?'':'ok', 4600);
     if(fails.length) toast('조회 실패: '+fails.slice(0,6).join(', ')+(fails.length>6?` 외 ${fails.length-6}개`:'')+'<br>설정 → 종목코드 화면에서 <b>미조회</b> 옆에 사유가 나옵니다.','err',7500);
     if(badMkt.length) toast(`리밸런싱 표의 ${badMkt.slice(0,4).join(', ')}${badMkt.length>4?` 외 ${badMkt.length-4}개`:''}는 `
-      + `이 계획이 셈하는 ${rebCur()==='USD'?'달러':'원화'}와 시세의 통화가 달라 현재가를 넣지 않았습니다.`
+      + `${rebWhere()}에서 쓸 수 없는 코드여서 현재가를 넣지 않았습니다.`
       + `<br>코드를 고치거나 <b>새 종목 코드·시세 찾기</b>로 다시 찾아주세요.`,'err',8000);
     if(noCode) toast(`코드가 비어 있어 건너뛴 종목이 ${noCode}개 있습니다. 설정 → 종목코드에서 <b>자동매칭 실행</b>을 눌러주세요.`,'err',7500);
   }catch(e){
@@ -2096,6 +2156,7 @@ async function doSave(withSnap, key){
    올리기 전에 시트를 한 번 읽어, 다른 기기가 먼저 저장했는지 확인합니다. */
 async function pushToSheet(auto){
   if(!canSync() || syncing) return false;
+  flushAcctNameEdits();            /* 고치는 중인 계좌 이름을 먼저 마무리합니다 */
   clearTimeout(autoT);
   syncing = true; setSync('저장 중…');
   try{
@@ -2497,7 +2558,14 @@ function bindStat(){
     const l=e.target.closest('[data-snapload]'), d=e.target.closest('[data-snapdel]');
     if(l){ if(!confirm(`${keyLabel(l.dataset.snapload)} 시점의 내용을 화면에 불러옵니다.\n저장하지 않은 현재 내용은 사라집니다. 계속할까요?`)) return;
       try{ const r=await api('getSnap',{key:l.dataset.snapload});
-        if(r.state&&r.state.accounts){ S=normalize(r.state); persist(); dirty=true; renderAll(); show('dash');
+        if(r.state&&r.state.accounts){
+          /* 그 시점의 state 에는 그 뒤에 생긴 '옛 이름 → 지금 이름' 연결이 없습니다.
+             그대로 대입하면 연결이 사라져 이름을 바꾼 계좌의 기록이 두 줄로 갈라지고,
+             이 상태를 저장하면 서버에서도 영구히 없어집니다. 지금 것을 더 최신으로 보아
+             합쳐서 넘깁니다(지금 쓰는 이름이 계좌 이름과 겹치면 resolveAcct 가 계좌 이름을
+             먼저 보므로 그냥 잠들어 있습니다). */
+          const keepAliases = Object.assign({}, r.state.aliases||{}, S.aliases||{});
+          S=normalize(Object.assign({}, r.state, { aliases:keepAliases })); persist(); dirty=true; renderAll(); show('dash');
           toast(`${keyLabel(l.dataset.snapload)} 시점을 불러왔습니다.`,'ok'); }
         else toast('그 시점의 상세 내용이 없습니다.','err');
       }catch(err){ toast(err.message,'err'); } }
