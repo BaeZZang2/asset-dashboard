@@ -1079,7 +1079,9 @@ function resolveAcct(name){
   const m = S.aliases || {};
   let n = name;
   for(let i=0; i<20 && m[n] && m[n]!==n; i++) n = m[n];
-  return S.accounts.some(a=>a.name===n) ? n : name;
+  /* 그 계좌를 이미 지웠더라도 마지막 이름으로 모읍니다. 안 그러면 이름을 바꾸기 전 기록과
+     바꾼 뒤 기록이 서로 다른 계좌로 갈라져 그래프가 끊깁니다. */
+  return n;
 }
 
 /* 이름만 바꿉니다. 옛 이름 → 지금 이름 연결(별칭)은 편집을 끝낼 때(commit)만 적습니다.
@@ -1266,12 +1268,19 @@ function codeMarket(code){
    자산군으로 정하면 안 됩니다 — 'TIGER 미국S&P500'처럼 미국에 투자하지만 국내에 상장된
    종목이 많아서, 자산군이 '미국주식'이라고 미국 시장을 뒤지면 못 찾습니다. */
 function rebMarket(r){
-  if(r && r.cls==='가상화폐') return 'CRYPTO';        /* 코인은 계좌와 무관하게 업비트에서 찾습니다 */
-  /* 전체 재배분은 고른 계좌 하나에서 거래하므로, 그 계좌가 붙은 시장을 따릅니다. */
-  if(S.reb.mode!=='cash'){ const a = rebAcct(); if(a) return marketOf(a); }
-  /* 추가 매수는 원화 계좌에서만 고릅니다. 이미 가진 종목이면 그 종목이 담긴 계좌를 봅니다. */
-  const k = nameKey((r && r.name) || '');
   const code = ((r && r.code) || '').trim();
+  if(r && r.cls==='가상화폐') return 'CRYPTO';        /* 코인은 계좌와 무관하게 업비트에서 찾습니다 */
+  if(S.reb.mode==='cash'){
+    /* 추가 매수는 원화 계좌에서만 고르고 넣을 금액도 원화라, 국내 시장으로 못 박습니다.
+       코인은 업비트 시세가 원화로 나오므로 예외입니다.
+       여기서 보유 계좌를 뒤지면, 달러 계좌에도 있는 코드를 손으로 적었을 때 시장이 US 로
+       바뀌어 시장 검증을 통과해 버리고, 달러 단가가 원화 셈에 섞입니다. */
+    return codeMarket(code)==='CRYPTO' ? 'CRYPTO' : 'KR';
+  }
+  /* 전체 재배분은 고른 계좌 하나에서 거래하므로, 그 계좌가 붙은 시장을 따릅니다. */
+  const a = rebAcct(); if(a) return marketOf(a);
+  /* 계좌가 하나도 없을 때만 — 이미 가진 종목이면 그 종목이 담긴 계좌를 봅니다. */
+  const k = nameKey((r && r.name) || '');
   const h = allHoldings().find(x=>(code && x.h.c===code) || (k && nameKey(x.h.n)===k));
   return h ? marketOf(h) : 'KR';
 }
