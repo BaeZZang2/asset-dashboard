@@ -347,7 +347,8 @@ body.dragging{user-select:none;-webkit-user-select:none}
         <button class="btn sm" id="btnPresetEdit">배분 만들기 / 편집</button>
         <button class="btn sm" id="btnRbFill">계좌 종목으로 행 채우기</button>
         <button class="btn sm" id="btnRbSync">현재 보유량·현재가 불러오기</button>
-        <button class="btn sm" id="btnRbRows">배분 항목으로 행 만들기</button>
+        <button class="btn sm" id="btnRbRows">배분 기본 구성 불러오기</button>
+        <button class="btn sm" id="btnRbSavePicks">지금 구성을 기본값으로</button>
         <button class="btn sm" id="btnRbQuote">새 종목 코드·시세 찾기</button>
         <button class="btn sm" id="btnRbAuto">목표 수량 자동 계산</button>
         <button class="btn sm" id="btnRbAdd">+ 행 추가</button>
@@ -543,7 +544,11 @@ function normalize(st){
   st.presets = st.presets.filter(p=>p && p.name).map(p=>{
     const w={};                                   // 쓰지 않는 자산군(옛 테마주식 등)은 걸러냅니다
     Object.keys(p.w||{}).forEach(k=>{ if(ASSET_CLASSES.includes(k)) w[k]=p.w[k]; });
-    return { name:p.name, w };
+    /* 이 배분의 기본 상품 구성 — 종목 이름이 있고 자산군이 살아 있는 것만 남깁니다. */
+    const picks = (Array.isArray(p.picks)?p.picks:[])
+      .map(q=>({ cls:migrateClass(q&&q.name, q&&q.cls), name:String((q&&q.name)||'').trim(), code:String((q&&q.code)||'').trim() }))
+      .filter(q=>q.name && ASSET_CLASSES.includes(q.cls));
+    return picks.length ? { name:p.name, w, picks } : { name:p.name, w };
   });
   st.reb = Object.assign({ acct:'', preset:'', mode:'all', budget:0, rows:[] }, st.reb||{});
   if(!Array.isArray(st.reb.rows)) st.reb.rows = [];
@@ -557,6 +562,7 @@ function normalize(st){
     st.reb.tq = 2;
   }
   st.rev = +st.rev || 0; st.savedAt = st.savedAt || ''; st.savedBy = st.savedBy || '';
+  if(!st.aliases || typeof st.aliases !== 'object' || Array.isArray(st.aliases)) st.aliases = {};
   if(!st.activePreset || !st.presets.some(p=>p.name===st.activePreset)) st.activePreset = st.presets[0].name;
   st.accounts.forEach(a=>{
     a.cur = a.cur==='USD' ? 'USD' : 'KRW';
@@ -1049,10 +1055,26 @@ function uniqueAcctName(name, skip){
   return base + ' ' + Date.now();
 }
 
+/* 시점 기록은 계좌를 '이름'으로 찾습니다. 이름을 바꾸면 옛 기록은 옛 이름으로 남아 있어,
+   이어 두지 않으면 한 계좌가 둘로 쪼개져 보입니다. 옛 이름 → 지금 이름을 적어 둡니다. */
+function resolveAcct(name){
+  if(S.accounts.some(a=>a.name===name)) return name;   /* 지금 쓰는 이름이면 그대로 */
+  const m = S.aliases || {};
+  let n = name;
+  for(let i=0; i<20 && m[n] && m[n]!==n; i++) n = m[n];
+  return S.accounts.some(a=>a.name===n) ? n : name;
+}
+
 function renameAcct(ai, name){
   const a = S.accounts[ai]; if(!a) return '';
   const old = a.name;
   a.name = name;
+  if(old !== name){
+    S.aliases = S.aliases || {};
+    Object.keys(S.aliases).forEach(k=>{ if(S.aliases[k]===old) S.aliases[k]=name; });  /* 더 옛날 이름들도 같이 */
+    S.aliases[old] = name;
+    delete S.aliases[name];
+  }
   if(S.reb.acct === old) S.reb.acct = name;
   markDirty();
   return name;
@@ -1237,12 +1259,64 @@ function pickable(cls){
   return [...m.values()].sort((a,b)=>a.name.localeCompare(b.name,'ko'));
 }
 
-/* 목표 배분에 들어 있는 자산군마다 빈 행을 하나씩 만듭니다(비중이 0인 항목은 뺍니다). */
+/* 방식을 바꿀 때 정리합니다. 같은 칸이라도 방식마다 뜻과 단위가 달라서,
+   앞 방식에서 쓰던 값을 그대로 두면 엉뚱한 수량이 나옵니다.
+   (달러 계좌로 채운 표를 추가 매수로 옮기면 달러 단가를 원화로 읽는 식) */
+function switchRebMode(){
+  S.reb.rows.forEach(r=>{ r.target=''; });      /* 최종 보유량 ↔ 사야 할 양 */
+  if(S.reb.mode==='cash'){
+    /* 추가 매수는 원화로만 셈합니다. 원화 계좌에 없는 종목은 단가의 통화를 알 수 없어 뺍니다. */
+    const ok = new Set(pickable().map(o=>nameKey(o.name)));
+    const before = S.reb.rows.length;
+    S.reb.rows = S.reb.rows.filter(r=>ok.has(nameKey(r.name||'')));
+    S.reb.budget = 0;                            /* 넣을 금액은 직접 적습니다 */
+    const cut = before - S.reb.rows.length;
+    if(cut) toast(`원화 계좌에 없는 종목 ${cut}개는 뺐습니다. 넣을 금액을 적어주세요.`,'',4600);
+  } else {
+    /* 전체 재배분은 고른 계좌 하나를 기준으로 합니다. 계좌를 넘나들며 모은 보유량은 지웁니다. */
+    S.reb.rows.forEach(r=>{ r.have = 0; });
+    S.reb.budget = (rebAcct()||{}).cash || 0;
+    if(S.reb.rows.length) toast('보유량은 비웠습니다. <b>현재 보유량·현재가 불러오기</b>를 눌러 채워주세요.','',5200);
+  }
+}
+
+/* 목표 배분마다 '기본 상품 구성'을 적어 둘 수 있습니다(preset.picks).
+   저장해 둔 구성이 있으면 그대로 불러오고, 없으면 자산군마다 빈 행을 하나씩 만듭니다. */
 function rowsFromPreset(){
   const p = S.presets.find(x=>x.name===S.reb.preset);
   if(!p) return [];
+  const picks = Array.isArray(p.picks) ? p.picks : [];
+  if(picks.length) return picks.map(q=>fillRow({ name:q.name||'', code:q.code||'', cls:q.cls }));
   return ASSET_CLASSES.filter(c=>+p.w[c] > 0)
     .map(c=>({ name:'', code:'', cls:c, price:0, have:0, target:'' }));
+}
+
+/* 종목 이름만 있는 행에 코드·현재가·보유량을 채워 넣습니다. */
+function fillRow(r){
+  const row = { name:r.name||'', code:r.code||'', cls:r.cls, price:0, have:0, target:'' };
+  const k = nameKey(row.name);
+  if(!k) return row;
+  const pool = S.reb.mode==='cash' ? pickable()
+    : allHoldings().filter(x=>!x.h.m).map(x=>({ name:baseName(x.h.n), code:x.h.c||'', price:+x.h.p||0, have:+x.h.q||0 }));
+  pool.forEach(o=>{
+    if(nameKey(o.name)!==k) return;
+    if(!row.code && o.code) row.code = o.code;
+    if(!(row.price>0) && o.price>0) row.price = o.price;
+    row.have += o.have||0;                       /* 여러 계좌에 나눠 가진 같은 종목은 합칩니다 */
+  });
+  return row;
+}
+
+/* 지금 표의 구성을 이 목표 배분의 기본값으로 적어 둡니다. */
+function savePicks(){
+  const p = S.presets.find(x=>x.name===S.reb.preset);
+  if(!p) { toast('목표 배분을 먼저 고르세요.','err'); return; }
+  const picks = S.reb.rows.filter(r=>baseName(r.name||''))
+    .map(r=>({ cls:r.cls, name:baseName(r.name), code:(r.code||'').trim() }));
+  if(!picks.length){ toast('종목이 적힌 행이 없습니다.','err'); return; }
+  p.picks = picks;
+  markDirty(); renderReb();
+  toast(`<b>${esc(p.name)}</b>의 기본 구성으로 ${picks.length}개 종목을 저장했습니다.`,'ok',4200);
 }
 
 /* 계산만 합니다. 화면은 건드리지 않으므로, 글자를 입력하는 중에도 안전하게 부를 수 있습니다. */
@@ -1340,7 +1414,10 @@ function renderReb(){
   $('#labRbBudget').textContent = addMode ? '추가 매수 금액 (원)' : '예수금 (원)';
   $('#btnRbFill').style.display = addMode ? 'none' : '';
   $('#btnRbSync').style.display = addMode ? 'none' : '';
-  $('#btnRbRows').style.display = addMode ? '' : 'none';
+  /* 기본 구성은 두 방식 모두에서 쓰므로 버튼은 항상 보여줍니다. */
+  const saved = (S.presets.find(p=>p.name===S.reb.preset)||{}).picks;
+  $('#btnRbRows').textContent = (saved && saved.length)
+    ? `배분 기본 구성 불러오기 (${saved.length}개)` : '배분 항목으로 행 만들기';
   if(document.activeElement !== $('#rbBudget'))          /* 금액을 넣고 있는 중이면 건드리지 않습니다 */
     $('#rbBudget').value = Math.round(S.reb.budget||0).toLocaleString('ko-KR');
 
@@ -1392,7 +1469,7 @@ function renderReb(){
       <th>매수가능량</th>${addMode ? '<th>사야 할 양</th>'
         : '<th>현재 보유량</th><th>최종 보유량</th><th>사야 할 양</th>'}<th>필요 현금</th>
       <th>${addMode?'매수 비중':'최종 비중'}</th><th>목표 대비</th><th></th></tr></thead>
-     <tbody>${body||`<tr><td colspan="${cols}" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>${addMode?'배분 항목으로 행 만들기':'계좌 종목으로 행 채우기'}</b>를 눌러보세요.</td></tr>`}</tbody>
+     <tbody>${body||`<tr><td colspan="${cols}" style="text-align:center;color:var(--tx2);padding:22px">행이 없습니다. 위의 <b>${esc($('#btnRbRows').textContent)}</b>${addMode?'':' 또는 <b>계좌 종목으로 행 채우기</b>'}를 눌러보세요.</td></tr>`}</tbody>
      <tfoot></tfoot>`;
 
   rebFoot(rows, pool, finalVal, need, budget);
@@ -1401,13 +1478,20 @@ function num(x){ const n=parseFloat(String(x??'').replace(/,/g,'')); return isFi
 
 function bindReb(){
   $('#rbAcct').onchange   = e=>{ S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0; markDirty(); renderReb(); };
-  /* 행은 표가 비어 있을 때만 자동으로 만듭니다(renderReb). 적어둔 내용을 말없이 지우지 않도록,
-     이미 행이 있으면 그대로 두고 '배분 항목으로 행 만들기'를 눌렀을 때만 새로 깝니다. */
-  $('#rbPreset').onchange = e=>{ S.reb.preset=e.target.value; S.activePreset=e.target.value; markDirty(); renderAll(); renderReb(); };
+  /* 목표 배분을 바꾸면, 그 배분에 적어 둔 기본 구성이 있으면 그대로 불러옵니다.
+     적어 둔 것이 없으면 지금 표를 건드리지 않습니다(적어둔 내용을 말없이 지우지 않도록). */
+  $('#rbPreset').onchange = e=>{
+    S.reb.preset=e.target.value; S.activePreset=e.target.value;
+    const p = S.presets.find(x=>x.name===S.reb.preset);
+    if(p && Array.isArray(p.picks) && p.picks.length){
+      S.reb.rows = rowsFromPreset();
+      toast(`<b>${esc(p.name)}</b>의 기본 구성 ${p.picks.length}개를 불러왔습니다.`,'ok');
+    }
+    markDirty(); renderAll(); renderReb();
+  };
   $('#rbMode').onchange   = e=>{
     const prev = S.reb.mode; S.reb.mode = e.target.value;
-    /* 적어 넣는 값의 뜻이 방식마다 다릅니다(최종 보유량 / 사야 할 양). 섞이지 않게 비웁니다. */
-    if(prev !== S.reb.mode) S.reb.rows.forEach(r=>{ r.target=''; });
+    if(prev !== S.reb.mode) switchRebMode();
     markDirty(); renderReb();
   };
   $('#rbBudget').oninput  = e=>{ S.reb.budget=num(e.target.value); markDirty(); clearTimeout(debT); debT=setTimeout(refreshReb,400); };
@@ -1443,12 +1527,17 @@ function bindReb(){
   $('#btnRbAdd').onclick = ()=>{ S.reb.rows.push({name:'',code:'',cls:'한국주식',price:0,have:0,target:''}); markDirty(); renderReb(); };
 
   $('#btnRbRows').onclick = ()=>{
+    const p = S.presets.find(x=>x.name===S.reb.preset);
+    const hasPicks = !!(p && Array.isArray(p.picks) && p.picks.length);
     const fresh = rowsFromPreset();
     if(!fresh.length){ toast('고른 목표 배분에 비중이 들어 있는 항목이 없습니다.','err'); return; }
-    if(S.reb.rows.length && !confirm(`지금 표의 ${S.reb.rows.length}개 행을 지우고, 목표 배분 항목 ${fresh.length}개로 새로 만듭니다. 계속할까요?`)) return;
+    if(S.reb.rows.length && !confirm(`지금 표의 ${S.reb.rows.length}개 행을 지우고, ${hasPicks?'기본 구성':'목표 배분 항목'} ${fresh.length}개로 새로 만듭니다. 계속할까요?`)) return;
     S.reb.rows = fresh; markDirty(); renderReb();
-    toast(`배분 항목 ${fresh.length}개로 행을 만들었습니다. 각 행에서 종목을 골라주세요.`,'ok');
+    toast(hasPicks ? `기본 구성 ${fresh.length}개를 불러왔습니다. 종목은 드롭다운에서 바꿀 수 있습니다.`
+                   : `배분 항목 ${fresh.length}개로 행을 만들었습니다. 각 행에서 종목을 골라주세요.`, 'ok', 4600);
   };
+
+  $('#btnRbSavePicks').onclick = savePicks;
 
   $('#btnRbFill').onclick = ()=>{
     const a=rebAcct(); if(!a) return;
@@ -1507,16 +1596,27 @@ function presetModal(){
   let idx = Math.max(0, S.presets.findIndex(p=>p.name===S.reb.preset));
   const draw = ()=>{
     const p = S.presets[idx] || {name:'',w:{}};
+    const picks = Array.isArray(p.picks) ? p.picks : [];
     $('#pmSel').innerHTML = S.presets.map((x,i)=>`<option value="${i}" ${i===idx?'selected':''}>${esc(x.name)}</option>`).join('');
     $('#pmName').value = p.name;
-    $('#pmRows').innerHTML = ASSET_CLASSES.map(c=>`
+    $('#pmRows').innerHTML = ASSET_CLASSES.map(c=>{
+      const mine = picks.filter(q=>q.cls===c).map(q=>q.name);
+      return `
       <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)">
         <i style="width:9px;height:9px;border-radius:2px;background:${CLS_COLOR[c]}"></i>
-        <span style="flex:1;font-size:12.5px">${c}</span>
+        <span style="flex:1;font-size:12.5px">${c}${mine.length
+          ? `<br><span class="mut" style="font-size:11px">${esc(mine.join(', '))}</span>` : ''}</span>
         <input class="num pmw" data-c="${c}" value="${p.w[c]??''}" placeholder="0" inputmode="decimal"
           style="width:80px;background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:5px 7px;text-align:right">
         <span class="mut" style="font-size:11px">%</span>
-      </div>`).join('');
+      </div>`;
+    }).join('');
+    $('#pmPicks').innerHTML = picks.length
+      ? `기본 상품 구성 <b>${picks.length}개</b>가 적혀 있습니다. 바꾸려면 리밸런싱 화면에서 종목을 고른 뒤 <b>지금 구성을 기본값으로</b>를 누르세요.
+         <button class="btn sm dgr" id="pmClearPicks" style="margin-left:8px">기본 구성 지우기</button>`
+      : '기본 상품 구성이 아직 없습니다. 리밸런싱 화면에서 종목을 고른 뒤 <b>지금 구성을 기본값으로</b>를 누르면 여기에 적힙니다.';
+    const cp = $('#pmClearPicks');
+    if(cp) cp.onclick = ()=>{ delete S.presets[idx].picks; markDirty(); draw(); toast('기본 구성을 지웠습니다.','ok'); };
     sumUp();
   };
   const sumUp = ()=>{
@@ -1535,16 +1635,22 @@ function presetModal(){
     <div class="fld"><label>이름</label><input id="pmName"></div>
     <div id="pmRows" style="margin:8px 0"></div>
     <div id="pmSum" style="text-align:right;font-size:12.5px;margin-top:6px"></div>
-    <div class="hint" style="margin-top:8px">여기서 만든 배분은 리밸런싱 화면에서 쓰입니다.</div>`,
+    <div class="hint" id="pmPicks" style="margin-top:8px"></div>
+    <div class="hint" style="margin-top:6px">여기서 만든 배분은 리밸런싱 화면에서 쓰입니다.</div>`,
     ()=>{
       const name=$('#pmName').value.trim(); if(!name){ toast('이름을 넣어주세요.','err'); return false; }
-      S.presets[idx] = { name, w:collect() };
+      const keep = S.presets[idx] && S.presets[idx].picks;     /* 기본 상품 구성은 그대로 둡니다 */
+      S.presets[idx] = keep && keep.length ? { name, w:collect(), picks:keep } : { name, w:collect() };
       S.reb.preset = name; S.activePreset = name;
       markDirty(); renderAll(); renderReb(); return true;
     });
 
   draw();
-  $('#pmSel').onchange = e=>{ S.presets[idx]={name:$('#pmName').value.trim()||S.presets[idx].name, w:collect()}; idx=+e.target.value; draw(); };
+  $('#pmSel').onchange = e=>{
+    const cur = S.presets[idx];
+    S.presets[idx] = Object.assign({}, cur, { name:$('#pmName').value.trim()||cur.name, w:collect() });
+    idx=+e.target.value; draw();
+  };
   $('#pmRows').addEventListener('input', sumUp);
   $('#pmNew').onclick = ()=>{ S.presets.push({name:'새 배분', w:{}}); idx=S.presets.length-1; draw(); };
   $('#pmDel').onclick = ()=>{
@@ -1912,13 +2018,19 @@ function acctNames(snaps){
   const out = [];
   S.accounts.forEach(a=>{ if(!out.includes(a.name)) out.push(a.name); });   /* 같은 이름은 한 줄로 */
   snaps.forEach(x=>Object.keys((x.summary&&x.summary.accounts)||{}).forEach(n=>{
-    if(!out.includes(n)) out.push(n);           /* 지금은 없어진 옛 계좌는 뒤에 붙입니다 */
+    const r = resolveAcct(n);                   /* 이름을 바꾼 계좌는 지금 이름으로 모읍니다 */
+    if(!out.includes(r)) out.push(r);           /* 지금은 없어진 옛 계좌는 뒤에 붙입니다 */
   }));
   return out;
 }
 /* 시점마다 계좌별 원금·평가액을 뽑아, 화면에 그릴 계열을 만듭니다. */
 function acctSeries(snaps){
-  const at = (x,n)=>((x.summary&&x.summary.accounts)||{})[n];
+  const at = (x,n)=>{
+    const acc = (x.summary&&x.summary.accounts)||{};
+    if(acc[n]) return acc[n];
+    const k = Object.keys(acc).find(key=>resolveAcct(key)===n);   /* 옛 이름으로 남아 있는 기록 */
+    return k ? acc[k] : undefined;
+  };
   const names = acctNames(snaps).filter(n=>snaps.some(x=>at(x,n)));
   const rows  = n => snaps.map(x=>{ const a=at(x,n); return a ? {cost:+a.cost||0, value:+a.value||0} : null; });
 
@@ -1948,7 +2060,7 @@ function snapCostByCur(sn){
       /* 통화를 안 남기던 시절의 기록 — 지금 계좌 목록에서 이름으로 찾습니다.
          이름을 바꿨거나 지운 계좌는 찾지 못하는데, 달러 계좌를 쓴 적이 있다면
          원화로 넘겨짚으면 안 됩니다. 환율 변동이 다시 납입으로 잡히기 때문입니다. */
-      const cur0 = (S.accounts.find(x=>x.name===name)||{}).cur;
+      const cur0 = (S.accounts.find(x=>x.name===resolveAcct(name))||{}).cur;
       if(cur0) cur = cur0;
       else if(everUsedUSD()) return null;  /* 알 수 없음 — 예전 방식으로 물러납니다 */
       else cur = 'KRW';                    /* 달러 계좌를 쓴 적이 없으니 원화가 확실합니다 */
