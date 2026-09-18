@@ -1060,7 +1060,13 @@ function uniqueAcctName(name, skip, ownName){
     for(let i=0; i<20 && m[t] && m[t]!==t; i++) t = m[t];
     return !(own && t === own);                  /* 내가 쓰던 옛 이름이면 막지 않습니다 */
   };
-  const taken = n => S.accounts.some((a,i)=> i!==skip && a.name===n) || retired(n);
+  /* 지운 계좌의 이름도 막습니다. 시점 기록에 그 이름이 남아 있는데 새 계좌에 같은 이름을
+     붙이면, 서로 다른 두 계좌가 하나의 이어진 기록으로 보입니다. */
+  const inSnaps = n => SNAPS.some(x=>
+    Object.prototype.hasOwnProperty.call((x.summary&&x.summary.accounts)||{}, n));
+  const taken = n => S.accounts.some((a,i)=> i!==skip && a.name===n)
+                  || retired(n)
+                  || (n !== own && inSnaps(n));
   if(!taken(base)) return base;
   for(let i=2; i<=S.accounts.length+2; i++){ const n = base+' '+i; if(!taken(n)) return n; }
   return base + ' ' + Date.now();
@@ -1878,7 +1884,7 @@ async function updatePrices(){
   S.reb.rows.forEach(r=>{ const c=(r.code||'').trim(); if(c) codes.add(c); });
   const t = toast(`<span class="spin"></span>종목 시세와 환율을 불러오는 중…`, '', 60000);
 
-  let failN=0, fails=[];
+  let failN=0, fails=[], badMkt=[];
   try{
     const [q,f] = await Promise.allSettled([
       codes.size ? api('quotes',{ items:[...codes].map(c=>({code:c})) }) : Promise.resolve({quotes:[]}),
@@ -1904,7 +1910,12 @@ async function updatePrices(){
       S.reb.rows.forEach(r=>{
         const code=(r.code||'').trim(); if(!code) return;
         const x=map[code];
-        if(x&&x.ok){ r.price=x.price; return; }
+        if(x&&x.ok){
+          /* 코드칸은 직접 고칠 수 있어서, 이 계획의 시장과 다른 코드가 들어올 수 있습니다.
+             그대로 넣으면 단가의 통화가 달라 매수 수량이 환율만큼 틀립니다. */
+          if(codeMarket(code)!==rebMarket(r)){ badMkt.push(`${r.name||code}(${code})`); return; }
+          r.price=x.price; return;
+        }
         /* 계좌에도 있는 코드는 위에서 이미 셌으니 두 번 세지 않습니다. */
         if(S.accounts.some(a=>a.h.some(h=>(h.c||'').trim()===code))) return;
         failN++; fails.push(`${r.name||code}(${code})`);
@@ -1914,8 +1925,11 @@ async function updatePrices(){
     S.updatedAt = new Date().toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
     markDirty(); renderAll();
     t.remove();
-    toast(`시세 갱신 완료` + (failN?` · <b>일부 조회 실패</b>`:'') + (noCode?` · 코드 없는 종목 있음`:''), (failN||noCode)?'':'ok', 4600);
+    toast(`시세 갱신 완료` + ((failN||badMkt.length)?` · <b>일부 조회 실패</b>`:'') + (noCode?` · 코드 없는 종목 있음`:''), (failN||badMkt.length||noCode)?'':'ok', 4600);
     if(fails.length) toast('조회 실패: '+fails.slice(0,6).join(', ')+(fails.length>6?` 외 ${fails.length-6}개`:'')+'<br>설정 → 종목코드 화면에서 <b>미조회</b> 옆에 사유가 나옵니다.','err',7500);
+    if(badMkt.length) toast(`리밸런싱 표의 ${badMkt.slice(0,4).join(', ')}${badMkt.length>4?` 외 ${badMkt.length-4}개`:''}는 `
+      + `${S.reb.mode==='cash'?'추가 매수는 원화로 셈하는데 그와':'지금 고른 계좌의 시장과'} 맞지 않는 코드여서 현재가를 넣지 않았습니다.`
+      + `<br>코드를 고치거나 <b>새 종목 코드·시세 찾기</b>로 다시 찾아주세요.`,'err',8000);
     if(noCode) toast(`코드가 비어 있어 건너뛴 종목이 ${noCode}개 있습니다. 설정 → 종목코드에서 <b>자동매칭 실행</b>을 눌러주세요.`,'err',7500);
   }catch(e){
     t.remove(); toast('시세 조회 실패: '+e.message,'err',6000);
