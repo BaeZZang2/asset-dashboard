@@ -1820,7 +1820,7 @@ async function updatePrices(){
   S.reb.rows.forEach(r=>{ const c=(r.code||'').trim(); if(c) codes.add(c); });
   const t = toast(`<span class="spin"></span>종목 시세와 환율을 불러오는 중…`, '', 60000);
 
-  let okN=0, failN=0, rebN=0, fails=[];
+  let failN=0, fails=[];
   try{
     const [q,f] = await Promise.allSettled([
       codes.size ? api('quotes',{ items:[...codes].map(c=>({code:c})) }) : Promise.resolve({quotes:[]}),
@@ -1835,7 +1835,7 @@ async function updatePrices(){
       S.accounts.forEach((a,ai)=>a.h.forEach(h=>{
         if(h.m||!h.c||!h.c.trim()) return;
         const code=h.c.trim(), r=map[code];
-        if(r&&r.ok){ h.p=r.price; h.ps=r.src; h.pe=''; if(r.name) h.pn=r.name; okN++; }
+        if(r&&r.ok){ h.p=r.price; h.ps=r.src; h.pe=''; if(r.name) h.pn=r.name; }
         else {
           h.ps=''; failN++;
           h.pe = r ? (r.err||r.error||r.msg||`서버가 '${code}' 시세를 찾지 못했습니다. 코드 형식(국내 6자리 숫자 / 해외 티커)과 ${a.cur==='USD'?'미국':'한국'} 시장이 맞는지 확인해주세요.`)
@@ -1845,14 +1845,14 @@ async function updatePrices(){
       }));
       S.reb.rows.forEach(r=>{
         const code=(r.code||'').trim(); if(!code) return;
-        const x=map[code]; if(x&&x.ok){ r.price=x.price; rebN++; }
+        const x=map[code]; if(x&&x.ok) r.price=x.price;
       });
     } else throw q.reason;
 
     S.updatedAt = new Date().toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
     markDirty(); renderAll();
     t.remove();
-    toast(`시세 ${okN}개 갱신 완료` + (rebN?` · 리밸런싱 ${rebN}개`:'') + (failN?` · <b>${failN}개 실패</b>`:'') + (noCode?` · 코드 없음 ${noCode}개`:''), (failN||noCode)?'':'ok', 4600);
+    toast(`시세 갱신 완료` + (failN?` · <b>일부 조회 실패</b>`:'') + (noCode?` · 코드 없는 종목 있음`:''), (failN||noCode)?'':'ok', 4600);
     if(fails.length) toast('조회 실패: '+fails.slice(0,6).join(', ')+(fails.length>6?` 외 ${fails.length-6}개`:'')+'<br>설정 → 종목코드 화면에서 <b>미조회</b> 옆에 사유가 나옵니다.','err',7500);
     if(noCode) toast(`코드가 비어 있어 건너뛴 종목이 ${noCode}개 있습니다. 설정 → 종목코드에서 <b>자동매칭 실행</b>을 눌러주세요.`,'err',7500);
   }catch(e){
