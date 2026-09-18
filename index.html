@@ -1517,24 +1517,56 @@ function rebMarket(r){
   return a ? marketOf(a) : (rebCur()==='USD' ? 'US' : 'KR');
 }
 
-/* 추가 매수 방식에서 고를 수 있는 종목 — 원화 계좌의 보유 종목을 이름으로 묶습니다.
-   달러 계좌 종목은 금액을 원화로 넣는 화면과 통화가 안 맞아 목록에서 뺍니다. */
+/* 추가 매수 방식에서 고를 수 있는 종목 — 원화 계좌의 보유 종목을 묶습니다.
+   달러 계좌 종목은 금액을 원화로 넣는 화면과 통화가 안 맞아 목록에서 뺍니다.
+   묶는 열쇠는 '이름 + 코드'입니다. 이름만으로 묶으면 같은 이름을 쓰는 다른 종목이
+   (증권계좌의 비트코인 관련 상품과 코인 지갑의 비트코인 등) 한 후보로 합쳐져,
+   먼저 걸린 쪽의 코드·단가가 엉뚱한 행에 들어갑니다.
+   코드가 없는 것은 같은 이름에 코드가 붙은 후보가 하나뿐일 때만 그쪽에 합칩니다
+   (AMD / AMD_소수점처럼 한 종목을 나눠 적어 둔 경우). 둘 이상이면 어느 쪽인지 알 수
+   없으므로 따로 둡니다. */
 function pickable(cls){
   const m = new Map();
   S.accounts.forEach(a=>{
     if(a.cur!=='KRW') return;
     a.h.forEach(h=>{
       if(h.m) return;                                    /* 평가액을 직접 적는 종목은 매수 계획을 세울 수 없습니다 */
-      const k = nameKey(h.n); if(!k) return;
+      const nk = nameKey(h.n); if(!nk) return;
       if(cls && h.a!==cls) return;
-      const g = m.get(k) || { name:baseName(h.n), code:'', price:0, have:0 };
+      const code = (h.c||'').trim();
+      const key = nk + '|' + mktKey(code);
+      const g = m.get(key) || { key, nk, name:baseName(h.n), code, price:0, have:0 };
       g.have += +h.q||0;
-      if(!g.code && h.c) g.code = h.c;
       if(!(g.price>0) && +h.p) g.price = +h.p;
-      m.set(k, g);
+      m.set(key, g);
     });
   });
-  return [...m.values()].sort((a,b)=>a.name.localeCompare(b.name,'ko'));
+  const all = [...m.values()], out = [];
+  all.forEach(o=>{
+    if(o.code){ out.push(o); return; }
+    const coded = all.filter(x=>x.nk===o.nk && x.code);
+    if(coded.length===1){
+      coded[0].have += o.have;
+      if(!(coded[0].price>0)) coded[0].price = o.price;
+      return;
+    }
+    out.push(o);
+  });
+  /* 이름이 같은 후보가 둘 이상 남으면 코드를 붙여 구분해 보여줍니다. */
+  out.forEach(o=>{
+    o.label = (o.code && out.filter(x=>x.nk===o.nk).length>1) ? `${o.name} (${o.code})` : o.name;
+  });
+  return out.sort((a,b)=>a.label.localeCompare(b.label,'ko'));
+}
+/* 이 행이 가리키는 후보 — 코드까지 같은 것이 먼저입니다. 코드가 비어 있으면
+   이름이 같은 후보가 하나뿐일 때만 그것으로 봅니다(둘 이상이면 사용자가 골라야 합니다). */
+function pickFor(r, list){
+  const nk = nameKey((r && r.name) || ''); if(!nk) return null;
+  const key = nk + '|' + mktKey((r && r.code) || '');
+  const exact = list.find(o=>o.key===key);
+  if(exact) return exact;
+  const same = list.filter(o=>o.nk===nk);
+  return same.length===1 ? same[0] : null;
 }
 
 /* 방식을 바꿀 때 정리합니다. 같은 칸이라도 방식마다 뜻과 단위가 달라서,
@@ -1544,7 +1576,7 @@ function switchRebMode(){
   S.reb.rows.forEach(r=>{ r.target=''; });      /* 최종 보유량 ↔ 사야 할 양 */
   if(S.reb.mode==='cash'){
     /* 추가 매수는 원화 계좌의 보유 종목 중에서 고르므로, 목록에 없는 행은 뺍니다. */
-    const ok = new Set(pickable().map(o=>nameKey(o.name)));
+    const ok = new Set(pickable().map(o=>o.nk));
     const before = S.reb.rows.length;
     S.reb.rows = S.reb.rows.filter(r=>ok.has(nameKey(r.name||'')));
     S.reb.budget = 0;                            /* 넣을 금액은 직접 적습니다 */
@@ -1587,7 +1619,7 @@ function rowsFromPreset(){
     if(S.reb.mode!=='cash') return rows;
     /* 추가 매수는 원화로만 셈합니다. 원화 계좌에 없는 종목은 단가가 어느 통화인지 알 수 없어
        불러오지 않습니다(달러 계좌에서 저장한 구성이 섞여 들어오는 것을 막습니다). */
-    const ok = new Set(pickable().map(o=>nameKey(o.name)));
+    const ok = new Set(pickable().map(o=>o.nk));
     return rows.filter(r=>ok.has(nameKey(r.name)));
   }
   return ASSET_CLASSES.filter(c=>+p.w[c] > 0)
@@ -1599,17 +1631,28 @@ function fillRow(r){
   const row = { name:r.name||'', code:r.code||'', cls:r.cls, price:0, have:0, target:'' };
   const k = nameKey(row.name);
   if(!k) return row;
-  /* 추가 매수는 원화 계좌 전체에서 모으고, 전체 재배분은 고른 계좌 하나에서만 가져옵니다.
-     다른 계좌의 수량을 섞으면 그 계좌에서는 실행할 수 없는 매매 계획이 나옵니다. */
-  const pool = S.reb.mode==='cash' ? pickable()
-    : (((rebAcct()||{}).h)||[]).filter(h=>!h.m)
-        .map(h=>({ name:baseName(h.n), code:h.c||'', price:+h.p||0, have:+h.q||0 }));
-  pool.forEach(o=>{
-    if(nameKey(o.name)!==k) return;
-    if(!row.code && o.code) row.code = o.code;
-    if(!(row.price>0) && o.price>0) row.price = o.price;
-    row.have += o.have||0;                       /* 여러 계좌에 나눠 가진 같은 종목은 합칩니다 */
-  });
+  if(S.reb.mode==='cash'){
+    /* 추가 매수는 원화 계좌 전체에서 모읍니다. 자산군까지 맞는 후보에서만 가져옵니다 —
+       이름만으로 고르면 같은 이름을 쓰는 다른 자산군 종목의 코드·단가가 들어옵니다. */
+    const o = pickFor(row, pickable(row.cls));
+    if(o){
+      if(!row.code && o.code) row.code = o.code;
+      if(o.price>0) row.price = o.price;
+      row.have = o.have || 0;
+    }
+  } else {
+    /* 전체 재배분은 고른 계좌 하나에서만 가져옵니다. 다른 계좌의 수량을 섞으면
+       그 계좌에서는 실행할 수 없는 매매 계획이 나옵니다. */
+    (((rebAcct()||{}).h)||[]).filter(h=>!h.m).forEach(h=>{
+      if(nameKey(h.n)!==k) return;
+      const hc = (h.c||'').trim();
+      /* 한 계좌 안에서도 이름이 같고 코드가 다른 종목이 있을 수 있습니다. */
+      if(row.code && hc && hc!==row.code) return;
+      if(!row.code && hc) row.code = hc;
+      if(!(row.price>0) && +h.p) row.price = +h.p;
+      row.have += +h.q||0;                       /* 같은 종목을 나눠 적어 둔 것은 합칩니다 */
+    });
+  }
   /* 코드가 비어 있으면 이름이 같은 다른 계좌 종목에서 빌려옵니다. 단가·보유량은 빌리지 않습니다. */
   if(!row.code){
     const y = allHoldings().find(x=>x.h.c && nameKey(x.h.n)===k);
@@ -1751,11 +1794,13 @@ function renderReb(){
     const fin = finalVal>0 ? T*(+r.price||0)/finalVal : 0;
     const gap = fin - r.w;
     const list = addMode ? pickOf(r.cls) : null;
+    /* 이름이 같은 후보가 여럿일 수 있어, 고른 값은 이름이 아니라 후보 열쇠로 주고받습니다. */
+    const sel = addMode ? pickFor(r, list) : null;
     const nameCell = addMode
       ? `<select data-rf="pick" style="min-width:160px">
            <option value="">— 종목 고르기 —</option>
-           ${list.map(o=>`<option value="${esc(o.name)}" ${o.name===r.name?'selected':''}>${esc(o.name)}</option>`).join('')}
-           ${r.name && !list.some(o=>o.name===r.name) ? `<option value="${esc(r.name)}" selected>${esc(r.name)} (목록 밖)</option>` : ''}
+           ${list.map(o=>`<option value="${esc(o.key)}" ${o===sel?'selected':''}>${esc(o.label)}</option>`).join('')}
+           ${r.name && !sel ? `<option value="" selected>${esc(r.name)} (목록 밖)</option>` : ''}
          </select>`
       : `<input data-rf="name" value="${esc(r.name||'')}" style="text-align:left;min-width:150px">`;
     return `<tr data-i="${i}">
@@ -1869,7 +1914,7 @@ function bindReb(){
     if(f!=='pick') return;
     /* 보유 종목에서 고르면 코드·현재가·보유량까지 함께 채웁니다. */
     const r = S.reb.rows[+e.target.closest('tr').dataset.i];
-    const o = pickable(r.cls).find(x=>x.name===e.target.value);
+    const o = pickable(r.cls).find(x=>x.key===e.target.value);
     /* 종목이 바뀌면 적어 둔 수량은 앞 종목의 것입니다. 그대로 두면 3만원짜리 10주가
        50만원짜리 10주로 읽혀 필요 현금이 단가 차이만큼 뛴 채로 보입니다. */
     if(o && o.name!==r.name) r.target='';
