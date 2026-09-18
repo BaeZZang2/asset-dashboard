@@ -482,6 +482,7 @@ function seedState(){
     presets: JSON.parse(JSON.stringify(DEFAULT_PRESETS)),
     activePreset: '올웨더 연간',
     reb:{ acct:'', preset:'', mode:'all', budget:0, rows:[] },
+    mkts:{},                          // 종목코드 → 상장 시장 (KR/US/CRYPTO)
     updatedAt:'',
     rev:0, savedAt:'', savedBy:''     // 기기 간 동기화용
   };
@@ -573,6 +574,24 @@ function normalize(st){
       q:+h.q||0, b:+h.b||0, m:!!h.m, v:+h.v||0, p:+h.p||0, ps:h.ps||'', pn:h.pn||'', pe:h.pe||''
     }));
   });
+  /* 종목 시장 대장 — 적혀 있는 값만 남깁니다. */
+  const mk = {};
+  if(st.mkts && typeof st.mkts==='object' && !Array.isArray(st.mkts))
+    Object.keys(st.mkts).forEach(k=>{
+      const key = mktKey(k);
+      if(key && MKTS.includes(st.mkts[k])) mk[key] = st.mkts[k];
+    });
+  st.mkts = mk;
+  /* 아직 대장에 없는 코드는 '그 코드를 담고 있는 계좌'로 채워 넣습니다. 달러 계좌에 있으면
+     미국, 가상자산 계좌에 있으면 코인 — 지금까지 시세가 제대로 나왔다는 것이 곧 근거입니다.
+     한 코드가 통화가 다른 계좌 양쪽에 걸쳐 있으면 근거가 못 되니 코드 모양으로 가늠합니다. */
+  const seen = {};
+  st.accounts.forEach(a=>a.h.forEach(h=>{
+    const k = mktKey(h.c); if(!k || h.m || st.mkts[k]) return;
+    const m = marketOf(a);
+    seen[k] = (seen[k] && seen[k]!==m) ? '?' : m;
+  }));
+  Object.keys(seen).forEach(k=>{ st.mkts[k] = MKTS.includes(seen[k]) ? seen[k] : codeMarket(k); });
   return st;
 }
 
@@ -1254,37 +1273,90 @@ function acctModal(ai, newGrp){
 }
 
 
-/* ═══════════ 리밸런싱 ═══════════ */
-function rebAcct(){ return S.accounts.find(a=>a.name===S.reb.acct) || S.accounts[0]; }
-/* 종목코드만 보고 어느 시장 것인지 가늠합니다.
+/* ═══════════ 종목 시장 대장 ═══════════
+   종목코드마다 '어느 시장에 상장되어 있나'를 S.mkts 에 한 번만 적어 두고, 시장이 필요한
+   곳은 모두 이 대장을 봅니다.
+   예전에는 화면마다(리밸런싱 방식 / 고른 계좌 / 자산군 / 코드 모양) 그때그때 시장을
+   따로 추론했습니다. 그래서 한 경로를 고치면 다른 경로에 빈틈이 생기는 일이 반복됐고,
+   달러 단가가 원화 셈에 섞여 매수량이 환율만큼 틀리는 버그가 계속 나왔습니다.
+   대장을 한 곳에 두면 추론하는 자리가 하나로 줄어듭니다. */
+const MKTS = ['KR','US','CRYPTO'];
+const mktKey = code => String(code||'').trim().toUpperCase();
+
+/* 코드 모양만 보고 가늠합니다 — 대장에 아직 없을 때의 마지막 수단입니다.
    국내는 6자리 숫자, 코인은 KRW-BTC 형태, 그 밖에는 해외 티커입니다. */
 function codeMarket(code){
-  const c = String(code||'').trim();
+  const c = mktKey(code);
   if(!c) return '';
   if(/^[A-Za-z]{3,4}-[A-Za-z0-9]+$/.test(c)) return 'CRYPTO';
   if(/^\d{6}$/.test(c)) return 'KR';
   return 'US';
 }
+/* 이 코드의 시장 — 대장이 먼저, 없으면 코드 모양으로 가늠합니다. */
+function marketOfCode(code){
+  const k = mktKey(code); if(!k) return '';
+  const m = S.mkts && S.mkts[k];
+  return MKTS.includes(m) ? m : codeMarket(k);
+}
+/* 대장에 적습니다. 코드가 정해지는 자리(검색·자동매칭·직접 입력·시세 조회)가 모두 여기를 지납니다.
+   알려준 시장이 없으면 코드 모양으로 한 번 적어 두고, 이미 적혀 있으면 덮지 않습니다. */
+function setCodeMarket(code, mkt){
+  const k = mktKey(code); if(!k) return;
+  S.mkts = S.mkts || {};
+  if(MKTS.includes(mkt)) S.mkts[k] = mkt;
+  else if(!MKTS.includes(S.mkts[k])) S.mkts[k] = codeMarket(k);
+}
+/* 이 시장의 시세는 어느 통화로 오나. 업비트 시세는 원화로 옵니다. */
+const marketCur = m => m==='US' ? 'USD' : 'KRW';
+/* 시세를 어디서 받아왔는지 보면 어느 시장 종목인지 알 수 있습니다 — 가장 확실한 근거입니다.
+   googlefinance 는 국내·해외 모두에 쓰이므로 판단하지 않습니다. */
+function srcMarket(src){
+  const s = String(src||'').toLowerCase();
+  if(!s) return '';
+  if(s.indexOf('upbit')===0) return 'CRYPTO';
+  if(s.indexOf('naver-world')===0 || s.indexOf('stooq')===0 || s.indexOf('yahoo')===0) return 'US';
+  if(s.indexOf('naver')===0) return 'KR';
+  return '';
+}
 
-/* 리밸런싱 행의 종목을 어느 시장에서 찾을지.
+/* ═══════════ 리밸런싱 ═══════════ */
+function rebAcct(){ return S.accounts.find(a=>a.name===S.reb.acct) || S.accounts[0]; }
+
+/* 지금 계획이 셈하는 통화. 추가 매수는 넣을 금액이 원화이고,
+   전체 재배분은 고른 계좌의 예수금 통화입니다. */
+function rebCur(){ return S.reb.mode==='cash' ? 'KRW' : ((rebAcct()||{}).cur==='USD' ? 'USD' : 'KRW'); }
+/* 이 코드를 지금 계획에 쓸 수 있나 — 기준은 '시장'이 아니라 '단가의 통화' 하나입니다.
+   숫자를 망가뜨리는 것은 통화 차이뿐이고(달러 단가를 원화 자리에 넣으면 환율만큼 틀립니다),
+   원화끼리는 국내주식이든 코인이든 같은 자리에서 더해도 맞습니다. */
+function codeFitsReb(code){
+  const m = marketOfCode(code);
+  return !m || marketCur(m) === rebCur();
+}
+
+/* 리밸런싱 행의 종목을 어느 시장에서 '찾을지' — 검색에만 씁니다.
+   지키는 규칙 하나: 이 계획에서 쓸 수 있는 시장만 돌려줍니다(marketCur === rebCur).
+   그래서 검색이 붙여 준 코드는 codeFitsReb 를 언제나 통과합니다. 예전에는 이 함수가
+   '찾을 곳'과 '쓸 수 있나'를 겸했고, 검색을 도우려 추론을 넓힐 때마다 검증에 빈틈이
+   생겼습니다. 지금은 둘이 어긋날 수 없습니다.
    자산군으로 정하면 안 됩니다 — 'TIGER 미국S&P500'처럼 미국에 투자하지만 국내에 상장된
    종목이 많아서, 자산군이 '미국주식'이라고 미국 시장을 뒤지면 못 찾습니다. */
 function rebMarket(r){
+  const cur = rebCur();
+  const fits = m => !!m && marketCur(m)===cur;
   const code = ((r && r.code) || '').trim();
-  if(r && r.cls==='가상화폐') return 'CRYPTO';        /* 코인은 계좌와 무관하게 업비트에서 찾습니다 */
-  if(S.reb.mode==='cash'){
-    /* 추가 매수는 원화 계좌에서만 고르고 넣을 금액도 원화라, 국내 시장으로 못 박습니다.
-       코인은 업비트 시세가 원화로 나오므로 예외입니다.
-       여기서 보유 계좌를 뒤지면, 달러 계좌에도 있는 코드를 손으로 적었을 때 시장이 US 로
-       바뀌어 시장 검증을 통과해 버리고, 달러 단가가 원화 셈에 섞입니다. */
-    return codeMarket(code)==='CRYPTO' ? 'CRYPTO' : 'KR';
-  }
-  /* 전체 재배분은 고른 계좌 하나에서 거래하므로, 그 계좌가 붙은 시장을 따릅니다. */
-  const a = rebAcct(); if(a) return marketOf(a);
-  /* 계좌가 하나도 없을 때만 — 이미 가진 종목이면 그 종목이 담긴 계좌를 봅니다. */
+  const known = code ? marketOfCode(code) : '';
+  if(fits(known)) return known;                       /* 대장에 적힌 시장이 가장 먼저 */
+  /* 코인은 업비트 시세가 원화로만 나옵니다. 달러로 셈하는 계획에서는 쓸 수 있는 시장이
+     아예 없으므로 빈 값을 돌려주고, 검색 대상에서 빠집니다. */
+  if(r && r.cls==='가상화폐') return fits('CRYPTO') ? 'CRYPTO' : '';
+  /* 이름이 같은 보유 종목이 있으면 그 종목의 코드가 붙은 시장을 씁니다. */
   const k = nameKey((r && r.name) || '');
-  const h = allHoldings().find(x=>(code && x.h.c===code) || (k && nameKey(x.h.n)===k));
-  return h ? marketOf(h) : 'KR';
+  if(k){
+    const h = allHoldings().find(x=>x.h.c && nameKey(x.h.n)===k && fits(marketOfCode(x.h.c)));
+    if(h) return marketOfCode(h.h.c);
+  }
+  /* 그래도 모르면 이 계획의 통화에 맞는 기본 시장에서 찾습니다. */
+  return cur==='USD' ? 'US' : 'KR';
 }
 
 /* 추가 매수 방식에서 고를 수 있는 종목 — 원화 계좌의 보유 종목을 이름으로 묶습니다.
@@ -1313,7 +1385,7 @@ function pickable(cls){
 function switchRebMode(){
   S.reb.rows.forEach(r=>{ r.target=''; });      /* 최종 보유량 ↔ 사야 할 양 */
   if(S.reb.mode==='cash'){
-    /* 추가 매수는 원화로만 셈합니다. 원화 계좌에 없는 종목은 단가의 통화를 알 수 없어 뺍니다. */
+    /* 추가 매수는 원화 계좌의 보유 종목 중에서 고르므로, 목록에 없는 행은 뺍니다. */
     const ok = new Set(pickable().map(o=>nameKey(o.name)));
     const before = S.reb.rows.length;
     S.reb.rows = S.reb.rows.filter(r=>ok.has(nameKey(r.name||'')));
@@ -1322,21 +1394,28 @@ function switchRebMode(){
     if(cut) toast(`원화 계좌에 없는 종목 ${cut}개는 뺐습니다. 넣을 금액을 적어주세요.`,'',4600);
   } else {
     /* 전체 재배분은 고른 계좌 하나를 기준으로 합니다. 계좌를 넘나들며 모은 보유량은 지우고,
-       그 계좌 시장이 아닌 코드와 그 코드로 받아둔 단가도 버립니다. 추가 매수 행은 원화
-       기준이라, 고른 계좌가 달러 계좌면 원화 단가를 달러 예수금과 같은 단위로 셈하게 됩니다. */
+       예수금도 그 계좌 것으로 바꿉니다. */
     const a = rebAcct();
-    const want = a ? marketOf(a) : 'KR';
-    let cut = 0;
-    S.reb.rows.forEach(r=>{
-      r.have = 0;
-      const mkt = (r.code||'').trim() ? codeMarket(r.code) : 'KR';   /* 코드가 없으면 원화 계좌에서 온 값 */
-      if(mkt !== want){ r.code=''; r.price=0; cut++; }
-    });
+    S.reb.rows.forEach(r=>{ r.have = 0; });
     S.reb.budget = (a||{}).cash || 0;
     if(S.reb.rows.length)
-      toast(`보유량을 비웠습니다.${cut?` 이 계좌 시장과 맞지 않는 ${cut}개 행의 코드·현재가도 비웠습니다.`:''}`
-            + ` <b>현재 보유량·현재가 불러오기</b>를 눌러 채워주세요.`, '', 5600);
+      toast(`보유량을 비웠습니다. <b>현재 보유량·현재가 불러오기</b>를 눌러 채워주세요.`, '', 5000);
   }
+  /* 방식이 바뀌면 셈하는 통화도 바뀝니다. 통화가 안 맞는 코드와 그 코드로 받아둔 단가는
+     어느 방향이든 버립니다(전에는 전체 재배분으로 갈 때만 걸러서, 반대 방향에 빈틈이 있었습니다). */
+  const cut = dropUnfitCodes();
+  if(cut) toast(`이 방식은 ${rebCur()==='USD'?'달러':'원화'}로 셈합니다. 통화가 맞지 않는 ${cut}개 행의 코드·현재가를 비웠습니다.`
+                + ` <b>새 종목 코드·시세 찾기</b>로 다시 찾아주세요.`, '', 5600);
+}
+
+/* 지금 계획의 통화와 맞지 않는 코드·단가를 비웁니다. 비운 행 수를 돌려줍니다. */
+function dropUnfitCodes(){
+  let cut = 0;
+  S.reb.rows.forEach(r=>{
+    if(!(r.code||'').trim() || codeFitsReb(r.code)) return;
+    r.code=''; r.price=0; cut++;
+  });
+  return cut;
 }
 
 /* 목표 배분마다 '기본 상품 구성'을 적어 둘 수 있습니다(preset.picks).
@@ -1373,18 +1452,15 @@ function fillRow(r){
     if(!(row.price>0) && o.price>0) row.price = o.price;
     row.have += o.have||0;                       /* 여러 계좌에 나눠 가진 같은 종목은 합칩니다 */
   });
-  /* 코드는 통화와 무관하므로, 비어 있으면 다른 계좌에서 빌려옵니다. 단가·보유량은 빌리지 않습니다. */
+  /* 코드가 비어 있으면 이름이 같은 다른 계좌 종목에서 빌려옵니다. 단가·보유량은 빌리지 않습니다. */
   if(!row.code){
     const y = allHoldings().find(x=>x.h.c && nameKey(x.h.n)===k);
     if(y) row.code = y.h.c;
   }
-  /* 전체 재배분은 고른 계좌에서 거래합니다. 그 계좌가 붙은 시장이 아닌 코드는 지워, 시세를
-     그 계좌 시장에서 다시 찾게 합니다. 달러 종목 코드가 원화 계좌 계획에 남아 있으면
-     시세 조회가 달러 단가를 원화 자리에 넣어 매수량이 환율만큼 부풀어 오릅니다. */
-  if(S.reb.mode!=='cash' && row.code){
-    const a = rebAcct();
-    if(a && codeMarket(row.code) !== marketOf(a)) row.code = '';
-  }
+  /* 이 계획이 셈하는 통화와 다른 코드는 방식과 무관하게 지워, 시세를 다시 찾게 합니다.
+     달러 종목 코드가 원화 계획에 남아 있으면 시세 조회가 달러 단가를 원화 자리에 넣어
+     매수량이 환율만큼 부풀어 오릅니다. */
+  if(row.code && !codeFitsReb(row.code)){ row.code=''; row.price=0; }
   return row;
 }
 
@@ -1558,7 +1634,13 @@ function renderReb(){
 function num(x){ const n=parseFloat(String(x??'').replace(/,/g,'')); return isFinite(n)?n:0; }
 
 function bindReb(){
-  $('#rbAcct').onchange   = e=>{ S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0; markDirty(); renderReb(); };
+  $('#rbAcct').onchange   = e=>{
+    S.reb.acct=e.target.value; S.reb.budget = (rebAcct()||{}).cash||0;
+    /* 원화 계좌 ↔ 달러 계좌로 옮기면 셈하는 통화가 바뀝니다. 통화가 안 맞는 코드·단가를 비웁니다. */
+    const cut = dropUnfitCodes();
+    markDirty(); renderReb();
+    if(cut) toast(`이 계좌는 ${rebCur()==='USD'?'달러':'원화'}로 셈합니다. 통화가 맞지 않는 ${cut}개 행의 코드·현재가를 비웠습니다.`,'',5600);
+  };
   /* 목표 배분을 바꾸면, 그 배분에 적어 둔 기본 구성이 있으면 그대로 불러옵니다.
      적어 둔 것이 없으면 지금 표를 건드리지 않습니다(적어둔 내용을 말없이 지우지 않도록). */
   $('#rbPreset').onchange = e=>{
@@ -1592,6 +1674,24 @@ function bindReb(){
   $('#tReb').addEventListener('change', e=>{
     const f = e.target.dataset.rf;
     if(f==='cls'){ S.reb.mode==='cash' ? renderReb() : refreshReb(); return; }   /* 자산군이 바뀌면 고를 수 있는 종목도 바뀝니다 */
+    /* 코드를 다 적고 칸을 벗어나는 순간 대장에 올립니다(한 글자마다 올리면 엉뚱한 값이 쌓입니다). */
+    if(f==='code'){
+      const r = S.reb.rows[+e.target.closest('tr').dataset.i];
+      const code = (e.target.value||'').trim();
+      if(code){
+        setCodeMarket(code);
+        if(!codeFitsReb(code)){
+          r.price = 0;                                   /* 앞 종목의 단가가 남아 있으면 안 됩니다 */
+          /* refreshReb 는 입력칸을 다시 쓰지 않으므로, 비운 단가를 화면에도 직접 반영합니다.
+             안 그러면 셈에는 0 이 쓰이는데 화면에는 옛 단가가 남아 보입니다. */
+          const pi = e.target.closest('tr').querySelector('[data-rf="price"]');
+          if(pi) pi.value = 0;
+          toast(`<b>${esc(code)}</b>는 ${marketCur(marketOfCode(code))==='USD'?'달러':'원화'} 시세라`
+                + ` ${rebCur()==='USD'?'달러':'원화'}로 셈하는 이 계획에는 쓸 수 없습니다.`, 'err', 6000);
+        }
+      }
+      markDirty(); refreshReb(); return;
+    }
     if(f!=='pick') return;
     /* 보유 종목에서 고르면 코드·현재가·보유량까지 함께 채웁니다. */
     const r = S.reb.rows[+e.target.closest('tr').dataset.i];
@@ -1641,8 +1741,8 @@ function bindReb(){
       const y = allHoldings().find(z=>((r.code&&z.h.c===r.code) || (k && nameKey(z.h.n)===k)) && (z.h.c || +z.h.p>0));
       if(!y) return;
       let got = false;
-      if(!(r.code||'').trim() && y.h.c && codeMarket(y.h.c)===marketOf(a)){ r.code=y.h.c; got=true; }
-      if(!(r.price>0) && +y.h.p && y.cur===a.cur){ r.price=+y.h.p; got=true; }
+      if(!(r.code||'').trim() && y.h.c && codeFitsReb(y.h.c)){ r.code=y.h.c; got=true; }
+      if(!(r.price>0) && +y.h.p && y.cur===rebCur()){ r.price=+y.h.p; got=true; }
       if(got) lent++;
     });
     S.reb.budget = +a.cash||0;
@@ -1800,9 +1900,11 @@ function renderCodes(){
     : '모든 종목에 코드가 들어 있습니다. 그래도 시세가 안 나오면 위 <b>미조회</b> 옆의 사유를 확인해주세요.';
 }
 
-/* 그룹(=같은 이름) 전체에 코드/조회정보를 적용 */
-function applyToGroup(g, code, pn){
+/* 그룹(=같은 이름) 전체에 코드/조회정보를 적용하고, 그 코드의 시장을 대장에 올립니다.
+   mkt 은 검색 결과가 알려준 시장입니다. 없으면 setCodeMarket 이 코드 모양으로 가늠합니다. */
+function applyToGroup(g, code, pn, mkt){
   g.rows.forEach(x=>{ x.h.c=code; if(pn) x.h.pn=pn; x.h.ps=''; x.h.pe=''; });
+  setCodeMarket(code, mkt);
 }
 
 /* 코드가 비어 있는 매칭 대상을 모읍니다 — 계좌 보유종목과 리밸런싱 표의 종목 둘 다. */
@@ -1812,14 +1914,15 @@ function matchJobs(only){
   codeGroups().forEach(g=>{
     const x = groupInfo(g), m = marketOf(x);
     if(x.h.c || g.rows.every(y=>y.h.m) || !pick(m)) return;
-    jobs.push({ label:g.label, market:m, apply:(code,name)=>applyToGroup(g, code, name) });
+    jobs.push({ label:g.label, market:m, apply:(code,name,mkt)=>applyToGroup(g, code, name, mkt) });
   });
   /* 리밸런싱 표에만 있는 종목 — 계좌에 없어도 코드를 찾아 줍니다. */
   S.reb.rows.forEach(r=>{
     const label = baseName(r.name||'');
     const m = rebMarket(r);
-    if((r.code||'').trim() || !label || !pick(m)) return;
-    jobs.push({ label, market:m, apply:code=>{ r.code = code; } });
+    /* m 이 비면 이 계획에서 쓸 수 있는 시장이 없다는 뜻이라 검색하지 않습니다. */
+    if((r.code||'').trim() || !label || !m || !pick(m)) return;
+    jobs.push({ label, market:m, apply:(code,name,mkt)=>{ r.code = code; setCodeMarket(code, mkt); } });
   });
   return jobs;
 }
@@ -1835,7 +1938,7 @@ async function autoMatch(only, stay){
     try{
       const r = await api('search',{ q:j.label });
       const hit = (r.items||[]).filter(it=> it.market===j.market )[0];
-      if(hit) j.apply(hit.code, hit.name);
+      if(hit) j.apply(hit.code, hit.name, hit.market);
     }catch(e){ /* 개별 실패는 넘어감 */ }
   }
   t.remove();
@@ -1867,7 +1970,7 @@ function bindCodes(){
         <span style="flex:1"><b>${esc(it.name)}</b><br><span class="mut" style="font-size:12px">${esc(it.code)} · ${esc(it.market)}${it.nation?' · '+esc(it.nation):''}</span></span>
       </label>`).join(''),
       ()=>{ const v=$('input[name=pick]:checked'); if(!v) return true;
-            const it=items[+v.value]; applyToGroup(g, it.code, it.name);
+            const it=items[+v.value]; applyToGroup(g, it.code, it.name, it.market);
             markDirty(); renderCodes(); renderAll(); return true; });
   });
 }
@@ -1921,7 +2024,8 @@ async function updatePrices(){
       S.accounts.forEach((a,ai)=>a.h.forEach(h=>{
         if(h.m||!h.c||!h.c.trim()) return;
         const code=h.c.trim(), r=map[code];
-        if(r&&r.ok){ h.p=r.price; h.ps=r.src; h.pe=''; if(r.name) h.pn=r.name; }
+        /* 시세가 실제로 어디서 왔는지가 이 코드의 시장을 알려주는 가장 확실한 근거입니다. */
+        if(r&&r.ok){ setCodeMarket(code, srcMarket(r.src)); h.p=r.price; h.ps=r.src; h.pe=''; if(r.name) h.pn=r.name; }
         else {
           h.ps=''; failN++;
           h.pe = r ? (r.err||r.error||r.msg||`서버가 '${code}' 시세를 찾지 못했습니다. 코드 형식(국내 6자리 숫자 / 해외 티커)과 ${a.cur==='USD'?'미국':'한국'} 시장이 맞는지 확인해주세요.`)
@@ -1933,10 +2037,11 @@ async function updatePrices(){
         const code=(r.code||'').trim(); if(!code) return;
         const x=map[code];
         if(x&&x.ok){
-          /* 코드칸은 직접 고칠 수 있어서, 이 계획의 시장과 다른 코드가 들어올 수 있습니다.
-             그대로 넣으면 단가의 통화가 달라 매수 수량이 환율만큼 틀립니다.
+          setCodeMarket(code, srcMarket(x.src));
+          /* 코드칸은 직접 고칠 수 있어서, 이 계획과 통화가 다른 코드가 들어올 수 있습니다.
+             그대로 넣으면 매수 수량이 환율만큼 틀립니다.
              들고 있던 단가도 이제 다른 종목 것이라 함께 버립니다. */
-          if(codeMarket(code)!==rebMarket(r)){ r.price=0; badMkt.push(`${r.name||code}(${code})`); return; }
+          if(!codeFitsReb(code)){ r.price=0; badMkt.push(`${r.name||code}(${code})`); return; }
           r.price=x.price; return;
         }
         /* 계좌에도 있는 코드는 위에서 이미 셌으니 두 번 세지 않습니다. */
@@ -1951,7 +2056,7 @@ async function updatePrices(){
     toast(`시세 갱신 완료` + ((failN||badMkt.length)?` · <b>일부 조회 실패</b>`:'') + (noCode?` · 코드 없는 종목 있음`:''), (failN||badMkt.length||noCode)?'':'ok', 4600);
     if(fails.length) toast('조회 실패: '+fails.slice(0,6).join(', ')+(fails.length>6?` 외 ${fails.length-6}개`:'')+'<br>설정 → 종목코드 화면에서 <b>미조회</b> 옆에 사유가 나옵니다.','err',7500);
     if(badMkt.length) toast(`리밸런싱 표의 ${badMkt.slice(0,4).join(', ')}${badMkt.length>4?` 외 ${badMkt.length-4}개`:''}는 `
-      + `${S.reb.mode==='cash'?'추가 매수는 원화로 셈하는데 그와':'지금 고른 계좌의 시장과'} 맞지 않는 코드여서 현재가를 넣지 않았습니다.`
+      + `이 계획이 셈하는 ${rebCur()==='USD'?'달러':'원화'}와 시세의 통화가 달라 현재가를 넣지 않았습니다.`
       + `<br>코드를 고치거나 <b>새 종목 코드·시세 찾기</b>로 다시 찾아주세요.`,'err',8000);
     if(noCode) toast(`코드가 비어 있어 건너뛴 종목이 ${noCode}개 있습니다. 설정 → 종목코드에서 <b>자동매칭 실행</b>을 눌러주세요.`,'err',7500);
   }catch(e){
