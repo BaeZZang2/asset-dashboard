@@ -1552,11 +1552,16 @@ function pickable(cls){
       if(h.m) return;                                    /* 평가액을 직접 적는 종목은 매수 계획을 세울 수 없습니다 */
       const nk = nameKey(h.n); if(!nk) return;
       if(cls && h.a!==cls) return;
-      const code = (h.c||'').trim();
+      let code = (h.c||'').trim(), price = +h.p||0;
+      /* 이 계획에서 쓸 수 없는 코드(원화 계좌에 잘못 들어 있는 달러 티커 등)는 '코드 없음'
+         으로 둡니다. 후보를 목록에서 빼 버리면 방식을 바꿀 때 그 행이 조용히 사라지고,
+         드롭다운에는 목록에 있는 것만 나오므로 다시 넣을 수도 없습니다.
+         코드·단가만 비워 두면 고를 수는 있고, 단가는 새로 받아야 합니다. */
+      if(code && !codeFitsReb(code)){ code=''; price=0; }
       const key = nk + '|' + mktKey(code);
       const g = m.get(key) || { key, nk, name:baseName(h.n), code, price:0, have:0 };
       g.have += +h.q||0;
-      if(!(g.price>0) && +h.p) g.price = +h.p;
+      if(!(g.price>0) && price) g.price = price;
       m.set(key, g);
     });
   });
@@ -1915,12 +1920,12 @@ function bindReb(){
       const tr = e.target.closest('tr');
       const r = S.reb.rows[+tr.dataset.i];
       const code = (e.target.value||'').trim();
-      const was = e.target.dataset.wasCode;            /* 고치기 전 코드 */
+      const wasCode = e.target.dataset.wasCode;        /* 고치기 전 코드 */
       delete e.target.dataset.wasCode;
       /* 지금 들고 있는 단가는 '고치기 전 코드'의 값입니다. 코드가 달라졌으면 시장이 같아도
          다른 종목의 단가이므로 버립니다. 예전에는 시장이 다를 때만 버려서, 국내 종목을
          다른 국내 종목으로 바꾸면 앞 종목 단가로 계속 셈했습니다. */
-      const changed = was != null && was !== code;
+      const changed = wasCode != null && mktKey(wasCode) !== mktKey(code);
       let why = '';
       if(code){
         setCodeMarket(code);
@@ -1932,7 +1937,7 @@ function bindReb(){
            안 그러면 셈에는 0 이 쓰이는데 화면에는 옛 단가가 남아 보입니다. */
         const pi = tr.querySelector('[data-rf="price"]');
         if(pi) pi.value = 0;
-        toast((why || `코드를 바꿨으니 <b>${esc(was||'')}</b> 의 현재가는 버렸습니다.`)
+        toast((why || `코드를 바꿨으니 <b>${esc(wasCode||'')}</b> 의 현재가는 버렸습니다.`)
               + ` <b>새 종목 코드·시세 찾기</b>로 새 단가를 받아주세요.`, why?'err':'', why?6000:4600);
       }
       markDirty(); refreshReb(); return;
@@ -2006,7 +2011,7 @@ function bindReb(){
          지갑의 단가가 그대로 들어옵니다(둘 다 원화라 통화 검사는 통과합니다).
          코드를 확인할 수 없는 종목(코드 없이 금액만 적어 둔 것)에서도 빌리지 않습니다. */
       if(!(r.price>0) && +y.h.p && fits && y.cur===rebCur()
-         && (!(r.code||'').trim() || (r.code||'').trim()===src)){ r.price=+y.h.p; got=true; }
+         && (!rc || mktKey(rc)===mktKey(src))){ r.price=+y.h.p; got=true; }
       if(got) lent++;
     });
     S.reb.budget = +a.cash||0;
@@ -2343,7 +2348,7 @@ async function updatePrices(){
           r.price=x.price; return;
         }
         /* 계좌에도 있는 코드는 위에서 이미 셌으니 두 번 세지 않습니다. */
-        if(S.accounts.some(a=>a.h.some(h=>(h.c||'').trim()===code))) return;
+        if(S.accounts.some(a=>a.h.some(h=>mktKey(h.c)===mktKey(code)))) return;
         failN++; fails.push(`${r.name||code}(${code})`);
       });
     } else throw q.reason;

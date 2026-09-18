@@ -14,21 +14,50 @@ const hits = (re, allow) => code.map((l,i)=>({n:i+1,l}))
 const show = h => h.map(x=>x.n+': '+x.l.trim().slice(0,76)).join('\n        ');
 /* 이 줄이 특정 함수 안(또는 그 정의 줄)인지 */
 const inside = (n, names) => {
+  /* 줄 수를 정해 두고 거슬러 오르면, 함수가 길 때 검사가 조용히 통과합니다(그래서 R1b 가
+     아무것도 안 잡고 있었습니다). 바로 위의 function 선언을 찾을 때까지 끝까지 올라갑니다. */
   const re = new RegExp('function (' + names.join('|') + ')\\b');
-  for(let i=n; i>Math.max(0,n-14); i--){
-    if(re.test(code[i-1])) return true;
-    if(i<n && /^function /.test(code[i-1])) return false;
+  for(let i=n; i>0; i--){
+    if(/^\s*function /.test(code[i-1])) return re.test(code[i-1]);
   }
   return false;
 };
 
 console.log('── 소스 점검 ──');
 
-/* R1. 종목코드끼리 견줄 때는 반드시 mktKey 를 거칩니다(대소문자·공백 차이로 다른 종목이 됩니다). */
-ok(hits(/(\.code|\.c|\bhc|\bsrc)\s*(===|!==)\s*(\(?[a-zA-Z_$][\w$]*\.(code|c)\b|hc\b|src\b)/,
-        /mktKey|dataset|\.cur\b/).length===0,
-   'R1 코드끼리 비교는 mktKey 를 거친다'
-   + (h=>h.length?'\n        '+show(h):'')(hits(/(\.code|\.c|\bhc|\bsrc)\s*(===|!==)\s*(\(?[a-zA-Z_$][\w$]*\.(code|c)\b|hc\b|src\b)/, /mktKey|dataset|\.cur\b/)));
+/* R1. 종목코드끼리 견줄 때는 반드시 mktKey 를 거칩니다(대소문자·공백 차이로 다른 종목이 됩니다).
+   모양을 좁게 잡았다가 `(r.code||'').trim()===src` 를 놓친 적이 있습니다. 그래서 '코드가
+   어느 한쪽에 나오는 비교'를 모두 잡고, 코드 비교가 아님을 확인한 줄만 아래에 적어 뺍니다.
+   새로 빼려면 왜 코드 비교가 아닌지 여기에 적으세요. */
+{
+  const ALLOW = [
+    /h===src|h!==dst/,                      /* 보유종목 객체끼리 — 같은 항목인지 */
+    /inp\.value!==h\.c/,                    /* 화면에 적힌 글자 vs 저장된 값 — 다시 그릴지 판단 */
+    /codeMarket\([^)]*\)\s*(===|!==)/,      /* 시장끼리 */
+    /nameKey\(|\.nk\s*(===|!==)/,           /* 이름(열쇠)끼리 */
+    /\.market\s*(===|!==)/,                 /* 검색 결과의 시장 */
+    /pcur\s*(===|!==)|(===|!==)\s*[a-z]*\.cur\b/,  /* 통화끼리 (코드가 같은 줄에 있을 뿐) */
+    /f\s*===\s*'(code|name|cls)'/,          /* 어느 칸을 고쳤나 — 칸 이름끼리 */
+  ];
+  const h = code.map((l,i)=>({n:i+1,l}))
+    .filter(x=>/(===|!==)/.test(x.l))
+    .filter(x=>/(\.code\b|\.c\b|\bhc\b|\brc\b|\bsrc\b|\bwasCode\b)[^=!]*(===|!==)|(===|!==)[^=]*(\.code\b|\.c\b|\bhc\b|\brc\b|\bsrc\b|\bwasCode\b)/.test(x.l))
+    .filter(x=>!/mktKey/.test(x.l))
+    .filter(x=>!ALLOW.some(re=>re.test(x.l)));
+  ok(h.length===0, 'R1 코드끼리 비교는 mktKey 를 거친다' + (h.length?'\n        '+show(h):''));
+}
+/* R1b. 추가 매수 후보는 이 계획에 쓸 수 있는 것만 — 고르는 자리가 검증을 우회했습니다. */
+{
+  /* pickable 함수 본문 안에 codeFitsReb 판단이 반드시 있어야 합니다.
+     (한 줄만 보던 예전 검사는 판단이 다른 줄로 옮겨가면 조용히 통과했습니다.) */
+  let inPick=false, seen=false;
+  code.forEach(l=>{
+    if(/^\s*function pickable\b/.test(l)) inPick=true;
+    else if(inPick && /^\s*function /.test(l)) inPick=false;
+    if(inPick && /codeFitsReb/.test(l)) seen=true;
+  });
+  ok(seen, 'R1b pickable 이 codeFitsReb 로 못 쓰는 코드를 가려낸다');
+}
 
 /* R2. 대장(S.mkts)에 쓰는 것은 setCodeMarket 뿐입니다. */
 {
@@ -71,7 +100,9 @@ SNAPS = [];
 S = normalize({ accounts:[
   {name:'토스',cur:'KRW',grp:'투자',cash:1e7,h:[H('KODEX 200','069500','한국주식',10,38000)]},
   {name:'해외',cur:'USD',grp:'투자',cash:5000,h:[H('애플','AAPL','미국주식',3,230)]},
-  {name:'업비트',cur:'KRW',grp:'가상자산',cash:1e6,h:[H('비트코인','KRW-BTC','가상화폐',0.1,1.5e8)]} ],
+  {name:'업비트',cur:'KRW',grp:'가상자산',cash:1e6,h:[H('비트코인','KRW-BTC','가상화폐',0.1,1.5e8)]},
+  /* 원화 계좌에 달러 코드가 잘못 들어 있는 상황 — B8 이 이 자리를 지나야 의미가 있습니다 */
+  {name:'섞인 계좌',cur:'KRW',grp:'투자',cash:0,h:[H('애플','AAPL','미국주식',5,230)]} ],
   fx:{usdkrw:1400}, reb:{acct:'토스',preset:'',mode:'all',budget:0,rows:[]} });
 
 const CODES = ['069500','AAPL','KRW-BTC','BTC-ETH','KRX:005930','NASDAQ:NVDA','BRK-B','7203'];
@@ -145,6 +176,20 @@ S.reb.mode='cash';
     if(back!==o) bad6.push((cls||'전체')+'/'+o.label+': 왕복 안 됨');
   });
 });
+/* B8. 후보 목록에 이 계획에서 쓸 수 없는 코드가 섞여 있지 않은지 — 고르는 자리는
+   검증을 거치지 않으므로, 목록 자체가 규칙을 지켜야 합니다. */
+const bad8 = [];
+[['cash','토스'],['all','토스'],['all','해외'],['all','업비트']].forEach(([mode,acct])=>{
+  S.reb.mode=mode; S.reb.acct=acct;
+  [undefined,'한국주식','미국주식','가상화폐','기타주식'].forEach(cls=>{
+    pickable(cls).forEach(o=>{
+      if(o.code && !codeFitsReb(o.code)) bad8.push(mode+'/'+acct+'/'+(cls||'전체')+'/'+o.code);
+    });
+  });
+});
+ok(bad8.length===0, 'B8 후보 목록에 못 쓰는 코드가 섞이지 않는다' + (bad8.length?' ('+bad8.join(', ')+')':''));
+S.reb.mode='cash'; S.reb.acct='토스';
+
 ok(bad6.length===0, 'B6 후보 열쇠가 유일하고 행 ↔ 후보가 왕복' + (bad6.length?' ('+bad6.join(', ')+')':''));
 
 /* B7. 이 기기 저장소에 들어가는 이름은 늘 '확정된' 이름 — 편집 중 값이 아닙니다. */
