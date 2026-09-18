@@ -479,6 +479,22 @@ const SEED_ACCOUNTS = [{"name":"SK증권_국내","cur":"KRW","grp":"투자","cas
    새 계좌가 남의 기록을 물려받고(예약 규칙으로 땜질), 옛 시점을 복원하면 이름이 되돌아가
    다시 갈라졌습니다. id 는 이 셋 모두에 흔들리지 않습니다. */
 function newAcctId(){ return 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
+/* 이미 쓰고 있던 계좌에 id 를 '처음' 붙일 때만 쓰는, 이름에서 정해지는 id.
+   무작위로 만들면 두 기기가 같은 옛 상태를 각자 불러와 서로 다른 id 를 붙입니다.
+   그 뒤 각자 저장하면 같은 계좌의 시점 기록에 다른 id 가 섞여 계좌별 통계가 둘로
+   갈라집니다(정규화 결과는 서버에 바로 올라가지 않으므로 기기끼리 맞출 기회도 없습니다).
+   이름이 같으면 어느 기기에서든 같은 값이 나오도록 이름만으로 만듭니다.
+   새로 만드는 계좌는 물려받을 것이 없으니 newAcctId() 로 무작위 값을 씁니다. */
+function seedAcctId(name){
+  const s = 'acct:' + String(name==null?'':name);
+  let h1 = 0x811c9dc5, h2 = 0x01000193;
+  for(let i=0;i<s.length;i++){
+    const c = s.charCodeAt(i);
+    h1 = ((h1 ^ c) * 16777619) >>> 0;
+    h2 = (((h2 + c) * 31 + i) ^ (h1 >>> 7)) >>> 0;
+  }
+  return 'a' + h1.toString(36) + h2.toString(36);
+}
 
 function seedState(){
   return {
@@ -523,9 +539,7 @@ let autoT    = null;                 // 자동 저장 대기 타이머
 let syncNote = '';                   // 화면에 보여줄 동기화 상태
 
 function persist(){ LS.set('ad.state', S); }
-/* quiet: 편집이 끝나지 않은 값이라 서버로 올리지는 않습니다(이 기기에만 적어 둠).
-   dirty 는 그대로 켜 두므로, 편집을 끝내는 순간 자동 저장이 다시 예약됩니다. */
-function markDirty(quiet){ dirty = true; persist(); updateSaveBtn(); if(!quiet) queueAutoSave(); }
+function markDirty(){ dirty = true; persist(); updateSaveBtn(); queueAutoSave(); }
 
 function canSync(){ return !!CFG.url; }
 function queueAutoSave(){
@@ -633,7 +647,10 @@ function normalize(st){
   };
   st.accounts.forEach(a=>{
     let id = typeof a.id === 'string' ? a.id.trim() : '';
-    if(!id || idUsed.has(id)) id = idFromSnaps(a.name) || newAcctId();
+    if(!id || idUsed.has(id)) id = idFromSnaps(a.name) || seedAcctId(a.name);
+    /* 아주 드물게 겹치면(이름이 다른데 같은 값이 나오는 경우) 뒤에 번호를 붙입니다.
+       이 보정도 이름 순서만으로 정해지므로 기기끼리 같은 결과가 나옵니다. */
+    for(let i=2; idUsed.has(id); i++) id = seedAcctId(a.name) + '-' + i;
     a.id = id; idUsed.add(id);
   });
 
@@ -1198,8 +1215,9 @@ function resolveAcct(name){
 /* 이름만 바꿉니다. 옛 이름 → 지금 이름 연결(별칭)은 편집을 끝낼 때(commit)만 적습니다.
    이름칸을 직접 고칠 때는 글자마다 이 함수가 불리는데, 그때마다 별칭을 적으면
    'ㅌ','토','토스'처럼 조각난 이름들이 줄줄이 쌓입니다.
-   편집이 끝나기 전에 저장이 나가는 문제는 commitAcctName 을 저장 직전에 부르는 것으로
-   막습니다 — 서버에는 '마무리된 이름 + 연결'만 나갑니다. */
+   편집 중인 이름은 아예 S 에 넣지 않습니다(입력칸에만 둡니다). 그래서 이 함수는
+   '확정된 이름'만 받습니다. 저장이 편집 중에 나가는 경우는 pushToSheet 이 먼저
+   commitAcctName 을 불러 마무리합니다 — 서버에는 '마무리된 이름 + 연결'만 나갑니다. */
 function renameAcct(ai, name, opt){
   const a = S.accounts[ai]; if(!a) return '';
   const prev = a.name;
@@ -1212,7 +1230,7 @@ function renameAcct(ai, name, opt){
     delete S.aliases[name];
   }
   if(S.reb.acct === prev) S.reb.acct = name;
-  markDirty(opt && opt.draft);
+  markDirty();
   return name;
 }
 
@@ -1286,10 +1304,11 @@ function bindPanels(sel){
     if(t.dataset.acct!=null){
       /* 첫 글자를 넣을 때 '편집 전 이름'을 적어 둡니다. 편집을 끝낼 때 여기서부터 이어 줍니다. */
       if(t.dataset.was == null) t.dataset.was = S.accounts[+t.dataset.acct].name;
-      /* 아직 끝나지 않은 이름이라 서버로는 올리지 않습니다(draft).
-         올릴 일이 생기면 pushToSheet 이 먼저 commitAcctName 으로 마무리합니다. */
-      renameAcct(+t.dataset.acct, t.value, { draft:true });
-      t.style.width = acctNameW(t.value)+'ch'; debRender(); return; }
+      /* 다 적지 않은 이름은 S 에 넣지 않습니다. 넣으면 persist() 가 localStorage 에 적고,
+         change 도 visibilitychange 도 없이 앱이 죽으면 다음 실행에서 그 조각난 이름이
+         확정된 것처럼 남습니다(옛 이름 연결도 없이). 편집 중 값은 입력칸에만 두고,
+         확정은 commitAcctName 이 합니다 — change 때, 그리고 저장 직전에. */
+      t.style.width = acctNameW(t.value)+'ch'; return; }
     if(t.dataset.cash!=null){ const ai=+t.dataset.cash;
       S.accounts[ai].cash = num(t.value); markDirty(); refreshAcct(ai); debRender(); return; }
     const tr=t.closest('tr'); if(!tr||!t.dataset.f) return;
@@ -1647,13 +1666,14 @@ function fillRow(r){
   } else {
     /* 전체 재배분은 고른 계좌 하나에서만 가져옵니다. 다른 계좌의 수량을 섞으면
        그 계좌에서는 실행할 수 없는 매매 계획이 나옵니다. */
+    const rc = (row.code||'').trim();      /* 공백만 적힌 코드는 '코드 없음' 으로 봅니다 */
     (((rebAcct()||{}).h)||[]).filter(h=>!h.m).forEach(h=>{
       if(nameKey(h.n)!==k) return;
       const hc = (h.c||'').trim();
       /* 한 계좌 안에서도 이름이 같고 코드가 다른 종목이 있을 수 있습니다.
          코드 비교는 다른 곳과 같은 방식(mktKey)으로 해야 합니다. 그대로 견주면
          대소문자만 다른 코드를 다른 종목으로 보아 보유량이 0 으로 남습니다. */
-      if(row.code && hc && mktKey(hc)!==mktKey(row.code)) return;
+      if(rc && hc && mktKey(hc)!==mktKey(rc)) return;
       if(!row.code && hc) row.code = hc;
       if(!(row.price>0) && +h.p) row.price = +h.p;
       row.have += +h.q||0;                       /* 같은 종목을 나눠 적어 둔 것은 합칩니다 */
@@ -1962,7 +1982,8 @@ function bindReb(){
   $('#btnRbSync').onclick = ()=>{
     const a=rebAcct(); if(!a) return; let n=0, lent=0;
     S.reb.rows.forEach(r=>{
-      const h = a.h.find(x=>(r.code&&x.c===r.code)||x.n===r.name);
+      const rc = (r.code||'').trim();
+      const h = a.h.find(x=>(rc&&mktKey(x.c)===mktKey(rc))||x.n===r.name);
       if(h){ r.have=+h.q||0; if(!(r.code||'').trim() && h.c) r.code=h.c; if(+h.p) r.price=+h.p; n++; return; }
       /* 이 계좌에 없는 종목은 보유량 0 — 예전에는 값을 그대로 두어, 계좌 A 로 채운 표를
          계좌 B 로 바꿔 불러오면 B 에 없는 A 의 수량이 배분 대상과 매도량에 그대로 남았습니다.
@@ -1972,7 +1993,7 @@ function bindReb(){
       if(r.price>0 && (r.code||'').trim()) return;
       const k = nameKey(r.name||'');
       const cands = allHoldings().filter(z=>
-        ((r.code&&z.h.c===r.code) || (k && nameKey(z.h.n)===k)) && (z.h.c || +z.h.p>0));
+        ((rc&&mktKey(z.h.c)===mktKey(rc)) || (k && nameKey(z.h.n)===k)) && (z.h.c || +z.h.p>0));
       /* 이름이 같아도 시장이 다른 종목이 있을 수 있으므로(원화 증권계좌와 원화 코인 지갑이
          같은 이름을 쓰는 경우 등), 이 계획에서 쓸 수 있는 종목을 먼저 고릅니다. */
       const y = cands.find(z=>(z.h.c||'').trim() && codeFitsReb(z.h.c)) || cands[0];
@@ -2958,6 +2979,10 @@ function init(){
      휴대폰에서 앱을 내렸다 다시 열거나, PC에서 다른 탭에 갔다 돌아올 때 걸립니다. */
   let lastSync = Date.now();
   document.addEventListener('visibilitychange', ()=>{
+    /* 휴대폰에서 앱을 뒤로 넘기면 change 가 안 옵니다. 편집 중인 이름을 먼저 확정해야
+       합니다 — 그러지 않으면 돌아올 때 화면을 다시 그리면서 적던 이름이 사라집니다.
+       서버 연결·자동 저장 여부와 무관하게 해야 하므로 아래 검사보다 앞에 둡니다. */
+    if(document.visibilityState === 'hidden') flushAcctNameEdits();
     if(!canSync() || !CFG.auto) return;
     if(document.visibilityState === 'hidden'){
       if(dirty) pushToSheet(true);              // 앱을 떠날 때 밀린 내용을 올립니다
@@ -2976,7 +3001,11 @@ function init(){
   });
 
   if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
-  window.addEventListener('beforeunload', e=>{ if(dirty){ e.preventDefault(); e.returnValue=''; } });
+  /* 새로고침·닫기 때도 편집 중인 이름을 먼저 확정합니다(안 하면 그대로 사라집니다). */
+  window.addEventListener('beforeunload', e=>{
+    flushAcctNameEdits();
+    if(dirty){ e.preventDefault(); e.returnValue=''; }
+  });
 }
 document.addEventListener('DOMContentLoaded', init);
 
