@@ -1046,10 +1046,20 @@ function acctNameW(s){
 
 /* 계좌 이름 바꾸기. 리밸런싱은 계좌를 '이름'으로 기억하므로 같이 옮겨 줍니다. */
 /* 계좌 이름은 시점 기록에서 계좌를 찾는 열쇠라, 겹치면 한쪽 기록이 묻힙니다.
-   같은 이름이 있으면 뒤에 숫자를 붙여 서로 다르게 만듭니다. */
+   지금 쓰는 이름은 물론, 이름을 바꿔서 물려 둔 옛 이름도 다시 쓰지 못하게 합니다.
+   옛 이름을 새 계좌에 붙이면 그 이름으로 남아 있던 기록이 새 계좌 것으로 잘못 붙습니다.
+   단, 자기가 예전에 쓰던 이름으로 되돌리는 것은 됩니다. */
 function uniqueAcctName(name, skip){
   const base = String(name==null?'':name).trim() || '이름 없음';
-  const taken = n => S.accounts.some((a,i)=> i!==skip && a.name===n);
+  const mine = skip>=0 ? S.accounts[skip] : null;
+  const retired = n => {
+    const m = S.aliases || {};
+    if(!Object.prototype.hasOwnProperty.call(m, n)) return false;
+    let t = n;
+    for(let i=0; i<20 && m[t] && m[t]!==t; i++) t = m[t];
+    return !(mine && t === mine.name);           /* 내가 쓰던 옛 이름이면 막지 않습니다 */
+  };
+  const taken = n => S.accounts.some((a,i)=> i!==skip && a.name===n) || retired(n);
   if(!taken(base)) return base;
   for(let i=2; i<=S.accounts.length+2; i++){ const n = base+' '+i; if(!taken(n)) return n; }
   return base + ' ' + Date.now();
@@ -1286,7 +1296,14 @@ function rowsFromPreset(){
   const p = S.presets.find(x=>x.name===S.reb.preset);
   if(!p) return [];
   const picks = Array.isArray(p.picks) ? p.picks : [];
-  if(picks.length) return picks.map(q=>fillRow({ name:q.name||'', code:q.code||'', cls:q.cls }));
+  if(picks.length){
+    const rows = picks.map(q=>fillRow({ name:q.name||'', code:q.code||'', cls:q.cls }));
+    if(S.reb.mode!=='cash') return rows;
+    /* 추가 매수는 원화로만 셈합니다. 원화 계좌에 없는 종목은 단가가 어느 통화인지 알 수 없어
+       불러오지 않습니다(달러 계좌에서 저장한 구성이 섞여 들어오는 것을 막습니다). */
+    const ok = new Set(pickable().map(o=>nameKey(o.name)));
+    return rows.filter(r=>ok.has(nameKey(r.name)));
+  }
   return ASSET_CLASSES.filter(c=>+p.w[c] > 0)
     .map(c=>({ name:'', code:'', cls:c, price:0, have:0, target:'' }));
 }
@@ -1296,14 +1313,22 @@ function fillRow(r){
   const row = { name:r.name||'', code:r.code||'', cls:r.cls, price:0, have:0, target:'' };
   const k = nameKey(row.name);
   if(!k) return row;
+  /* 추가 매수는 원화 계좌 전체에서 모으고, 전체 재배분은 고른 계좌 하나에서만 가져옵니다.
+     다른 계좌의 수량을 섞으면 그 계좌에서는 실행할 수 없는 매매 계획이 나옵니다. */
   const pool = S.reb.mode==='cash' ? pickable()
-    : allHoldings().filter(x=>!x.h.m).map(x=>({ name:baseName(x.h.n), code:x.h.c||'', price:+x.h.p||0, have:+x.h.q||0 }));
+    : (((rebAcct()||{}).h)||[]).filter(h=>!h.m)
+        .map(h=>({ name:baseName(h.n), code:h.c||'', price:+h.p||0, have:+h.q||0 }));
   pool.forEach(o=>{
     if(nameKey(o.name)!==k) return;
     if(!row.code && o.code) row.code = o.code;
     if(!(row.price>0) && o.price>0) row.price = o.price;
     row.have += o.have||0;                       /* 여러 계좌에 나눠 가진 같은 종목은 합칩니다 */
   });
+  /* 코드는 통화와 무관하므로, 비어 있으면 다른 계좌에서 빌려옵니다. 단가·보유량은 빌리지 않습니다. */
+  if(!row.code){
+    const y = allHoldings().find(x=>x.h.c && nameKey(x.h.n)===k);
+    if(y) row.code = y.h.c;
+  }
   return row;
 }
 
@@ -1845,7 +1870,11 @@ async function updatePrices(){
       }));
       S.reb.rows.forEach(r=>{
         const code=(r.code||'').trim(); if(!code) return;
-        const x=map[code]; if(x&&x.ok) r.price=x.price;
+        const x=map[code];
+        if(x&&x.ok){ r.price=x.price; return; }
+        /* 계좌에도 있는 코드는 위에서 이미 셌으니 두 번 세지 않습니다. */
+        if(S.accounts.some(a=>a.h.some(h=>(h.c||'').trim()===code))) return;
+        failN++; fails.push(`${r.name||code}(${code})`);
       });
     } else throw q.reason;
 
