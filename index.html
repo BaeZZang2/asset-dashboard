@@ -1562,9 +1562,13 @@ function pickable(cls){
    이름이 같은 후보가 하나뿐일 때만 그것으로 봅니다(둘 이상이면 사용자가 골라야 합니다). */
 function pickFor(r, list){
   const nk = nameKey((r && r.name) || ''); if(!nk) return null;
-  const key = nk + '|' + mktKey((r && r.code) || '');
-  const exact = list.find(o=>o.key===key);
+  const code = mktKey((r && r.code) || '');
+  const exact = list.find(o=>o.key===nk+'|'+code);
   if(exact) return exact;
+  /* 코드를 적어 둔 행은 그 코드의 후보만 인정합니다. 이름으로 물러나면, 코드는 A 인데
+     후보는 B 인 상태가 되어 B 의 단가가 A 의 행에 들어가고 화면에는 B 가 골라진 것처럼
+     보입니다(어긋난 것을 알려 주는 표시가 아무 데도 없습니다). */
+  if(code) return null;
   const same = list.filter(o=>o.nk===nk);
   return same.length===1 ? same[0] : null;
 }
@@ -1646,8 +1650,10 @@ function fillRow(r){
     (((rebAcct()||{}).h)||[]).filter(h=>!h.m).forEach(h=>{
       if(nameKey(h.n)!==k) return;
       const hc = (h.c||'').trim();
-      /* 한 계좌 안에서도 이름이 같고 코드가 다른 종목이 있을 수 있습니다. */
-      if(row.code && hc && hc!==row.code) return;
+      /* 한 계좌 안에서도 이름이 같고 코드가 다른 종목이 있을 수 있습니다.
+         코드 비교는 다른 곳과 같은 방식(mktKey)으로 해야 합니다. 그대로 견주면
+         대소문자만 다른 코드를 다른 종목으로 보아 보유량이 0 으로 남습니다. */
+      if(row.code && hc && mktKey(hc)!==mktKey(row.code)) return;
       if(!row.code && hc) row.code = hc;
       if(!(row.price>0) && +h.p) row.price = +h.p;
       row.have += +h.q||0;                       /* 같은 종목을 나눠 적어 둔 것은 합칩니다 */
@@ -1916,8 +1922,11 @@ function bindReb(){
     const r = S.reb.rows[+e.target.closest('tr').dataset.i];
     const o = pickable(r.cls).find(x=>x.key===e.target.value);
     /* 종목이 바뀌면 적어 둔 수량은 앞 종목의 것입니다. 그대로 두면 3만원짜리 10주가
-       50만원짜리 10주로 읽혀 필요 현금이 단가 차이만큼 뛴 채로 보입니다. */
-    if(o && o.name!==r.name) r.target='';
+       50만원짜리 10주로 읽혀 필요 현금이 단가 차이만큼 뛴 채로 보입니다.
+       이름이 아니라 후보 열쇠로 견줍니다 — 이름이 같고 코드만 다른 종목으로 바꾸는
+       것도 다른 종목으로 바꾸는 것입니다. */
+    const wasKey = nameKey(r.name||'') + '|' + mktKey(r.code||'');
+    if(o && o.key!==wasKey) r.target='';
     if(o){ r.name=o.name; r.code=o.code; r.price=o.price; r.have=o.have; }
     else { r.name=''; r.code=''; r.price=0; r.have=0; r.target=''; }
     markDirty(); renderReb();
