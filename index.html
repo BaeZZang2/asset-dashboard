@@ -1818,7 +1818,7 @@ async function updatePrices(){
   }));
   /* 리밸런싱 표에만 있는 종목(계좌에 아직 없는 종목)도 함께 조회합니다. */
   S.reb.rows.forEach(r=>{ const c=(r.code||'').trim(); if(c) codes.add(c); });
-  const t = toast(`<span class="spin"></span>${codes.size}개 종목 시세와 환율을 불러오는 중…`, '', 60000);
+  const t = toast(`<span class="spin"></span>종목 시세와 환율을 불러오는 중…`, '', 60000);
 
   let okN=0, failN=0, rebN=0, fails=[];
   try{
