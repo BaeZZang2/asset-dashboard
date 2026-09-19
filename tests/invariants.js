@@ -23,6 +23,23 @@ const inside = (n, names) => {
   return false;
 };
 
+/* 이 줄을 감싸는 '가장 안쪽 블록' — 줄 수를 정해 두고 훑으면 자리가 길어질 때 검사가 조용히
+   통과합니다(inside() 가 그랬습니다). 그래서 중괄호를 세어 블록의 시작·끝을 찾습니다. */
+const blockOf = n => {
+  const walk = (i, step) => {                   /* 열리지 않은 짝을 만나는 줄까지 */
+    let depth = 0;
+    for(; i>0 && i<=code.length; i+=step){
+      const chars = step<0 ? [...code[i-1]].reverse() : [...code[i-1]];
+      for(const ch of chars){
+        if(ch === (step<0 ? '}' : '{')) depth++;
+        else if(ch === (step<0 ? '{' : '}')){ if(depth) depth--; else return i; }
+      }
+    }
+    return step<0 ? 1 : code.length;
+  };
+  return code.slice(walk(n,-1) - 1, walk(n,1));
+};
+
 console.log('── 소스 점검 ──');
 
 /* R1. 종목코드끼리 견줄 때는 반드시 mktKey 를 거칩니다(대소문자·공백 차이로 다른 종목이 됩니다).
@@ -117,22 +134,6 @@ console.log('── 소스 점검 ──');
    사람이 적은 값이 곧바로 S 에 들어갑니다. 그래서 그 대입이 있는 블록에는 반드시 단가
    분기(setRebPrice)가 함께 있어야 합니다. */
 {
-  /* 줄 수를 정해 두고 훑으면 자리가 길어질 때 검사가 조용히 통과합니다(inside() 가 그랬습니다).
-     그래서 이 줄을 감싸는 '가장 안쪽 블록'을 중괄호를 세어 찾고, 그 안을 봅니다. */
-  const blockOf = n => {
-    const walk = (i, step) => {                 /* 열리지 않은 짝을 만나는 줄까지 */
-      let depth = 0;
-      for(; i>0 && i<=code.length; i+=step){
-        const chars = step<0 ? [...code[i-1]].reverse() : [...code[i-1]];
-        for(const ch of chars){
-          if(ch === (step<0 ? '}' : '{')) depth++;
-          else if(ch === (step<0 ? '{' : '}')){ if(depth) depth--; else return i; }
-        }
-      }
-      return step<0 ? 1 : code.length;
-    };
-    return code.slice(walk(n,-1) - 1, walk(n,1));
-  };
   /* 분기가 '있는 것처럼' 보이기만 해도 통과하면 안 되므로, 조건과 호출을 둘 다 봅니다
      (조건을 if(false) 로 바꿔 두면 setRebPrice 는 그대로 남아 통과했습니다). */
   const h = hits(/r\[f\]\s*=/).filter(x=>{
@@ -140,6 +141,82 @@ console.log('── 소스 점검 ──');
     return !blk.some(l=>/setRebPrice\(/.test(l)) || !blk.some(l=>/f\s*===\s*'price'/.test(l));
   });
   ok(h.length===0, 'R8b 공용 대입 앞에 단가 분기가 살아 있다' + (h.length?'\n        '+show(h):''));
+}
+/* R9. 리밸런싱 행의 코드는 setRebCode 로만 정합니다 — 코드와 단가는 늘 함께 움직여야 합니다.
+   자동매칭이 코드만 새로 붙이고 손으로 적어 둔 옛 단가를 그대로 두었습니다. 비우는 것(='')은
+   언제나 안전하므로 뺍니다. */
+{
+  /* row 는 fillRow 가 만드는 리밸런싱 행입니다 — 이름을 빼 두었다가 그 자리를 놓쳤습니다. */
+  const h = code.map((l,i)=>({n:i+1,l}))
+    .filter(x=>/\b(r|r0|row)\.code\s*=(?!=)\s*[^'"\s]/.test(x.l))
+    .filter(x=>!/setRebCode/.test(x.l))
+    .filter(x=>!inside(x.n, ['setRebCode']));
+  ok(h.length===0, 'R9 리밸런싱 코드는 setRebCode 로만 정한다' + (h.length?'\n        '+show(h):''));
+}
+/* R10. 입력칸을 새로 만드는 그리기는 withPendingEdits 를 지나야 합니다.
+   편집 중인 값은 S 에 없으므로(R6), 그냥 다시 그리면 적던 계좌 이름·코드가 통째로 사라집니다
+   (시세 조회·자동 저장이 끝나면서 renderAll 이 돌 때). 확정으로 때우면 조각난 이름이 굳습니다. */
+{
+  const bad = [];
+  /* 지켜야 할 그리기 함수를 이름으로 적어 두면 새 화면이 생길 때 빠집니다 — 실제로 설정
+     화면(renderCodes)을 빠뜨렸습니다. 그래서 '추적하는 입력칸이 든 틀을 innerHTML 로 새로
+     만드는 자리' 를 소스에서 찾아, 그 함수가 모두 보호를 지나는지 봅니다. */
+  const FRAMES = /root\.innerHTML\s*=|#tReb'\)\.innerHTML\s*=|#tCodes'\)\.innerHTML\s*=/;
+  const paints = code.map((l,i)=>({n:i+1,l})).filter(x=>FRAMES.test(x.l));
+  if(paints.length < 3) bad.push('새로 만드는 자리가 '+paints.length+'군데뿐 — 찾는 모양이 낡았는지 보세요');
+  paints.forEach(x=>{
+    let fn = '';
+    for(let i=x.n; i>0; i--){ const m=/^function ([A-Za-z0-9_$]+)/.exec(code[i-1]); if(m){ fn=m[1]; break; } }
+    if(!fn){ bad.push(x.n+'줄을 감싸는 함수를 찾지 못함'); return; }
+    const wrapped = code.some(l=>new RegExp('withPendingEdits\\(.*\\b'+fn+'\\b').test(l))
+                 || blockOf(x.n).some(l=>/withPendingEdits\(/.test(l));
+    if(!wrapped) bad.push(fn+' 이 withPendingEdits 를 지나지 않음');
+  });
+  /* 되돌리는 쪽이 '확정' 을 부르면 조각난 값이 S 에 들어갑니다 — 그러면 R6 가 무너집니다. */
+  const at = code.findIndex(l=>/^function restoreEdits\b/.test(l));
+  if(at < 0) bad.push('restoreEdits 함수를 찾지 못함');
+  else if(blockOf(at+2).some(l=>/commitAcctName\(|commitRebCode\(/.test(l)))
+    bad.push('restoreEdits 가 편집을 확정해 버림');
+  ok(bad.length===0, 'R10 다시 그릴 때 편집 중인 값을 지킨다' + (bad.length?' ('+bad.join(', ')+')':''));
+}
+/* R10b. 다시 그리는 중에 오는 change 로 편집을 확정하면 안 됩니다. 브라우저는 입력칸이 화면에서
+   빠질 때 그 칸의 change 를 그 자리에서 띄우고, 그것을 확정으로 받으면 적다 만 값이 굳습니다
+   (화면에는 확정된 값이 보여 알아채기도 어렵습니다 — 실제로 그렇게 '토스증' 이 굳었습니다). */
+{
+  const bad = [];
+  const at = code.findIndex(l=>/^function withPendingEdits\b/.test(l));
+  if(at < 0) bad.push('withPendingEdits 를 찾지 못함');
+  else {
+    const blk = blockOf(at+2);
+    if(!blk.some(l=>/painting\s*\+\+/.test(l)) || !blk.some(l=>/painting\s*--/.test(l)))
+      bad.push('withPendingEdits 가 painting 을 올리고 내리지 않음');
+  }
+  hits(/addEventListener\('change'/).forEach(x=>{
+    const blk = blockOf(x.n+1);                     /* 핸들러 본문 */
+    /* 확정하는 자리를 이름으로 모아 둡니다 — 설정 화면의 코드칸(applyToGroup)을 빠뜨렸습니다 */
+    if(blk.some(l=>/commitAcctName\(|commitRebCode\(|applyToGroup\(/.test(l))
+       && !blk.some(l=>/if\(painting\)\s*return/.test(l)))
+      bad.push(x.n+'줄 change 핸들러에 painting 확인이 없음');
+  });
+  ok(bad.length===0, 'R10b 다시 그리는 중의 change 로는 확정하지 않는다'
+     + (bad.length?' ('+bad.join(', ')+')':''));
+}
+/* R11. 계좌 보유종목의 단가는 setHoldPrice 로만 넣습니다 — 통화 판단이 시세 반영·자동매칭·
+   이름으로 퍼뜨리기·손입력 네 곳에 흩어져 있었고, 앞의 세 곳을 빠뜨렸습니다. */
+{
+  const h = code.map((l,i)=>({n:i+1,l}))
+    .filter(x=>/\b(h|dst|x\.h|src)\.p\s*=(?!=)\s*[^0\s;]/.test(x.l))
+    .filter(x=>!/setHoldPrice/.test(x.l))
+    .filter(x=>!inside(x.n, ['setHoldPrice']));
+  ok(h.length===0, 'R11 계좌 종목 단가는 setHoldPrice 로만 넣는다' + (h.length?'\n        '+show(h):''));
+}
+/* R11b. 보유종목 입력 핸들러의 공용 대입(h[f] = …)으로 단가가 흘러들면 안 됩니다. */
+{
+  const h = hits(/h\[f\]\s*=\s*num\(/).filter(x=>{
+    const blk = blockOf(x.n);
+    return !blk.some(l=>/setHoldPrice\(/.test(l)) || !blk.some(l=>/f\s*===\s*'p'/.test(l));
+  });
+  ok(h.length===0, 'R11b 보유종목 공용 대입 앞에 단가 분기가 살아 있다' + (h.length?'\n        '+show(h):''));
 }
 /* R7. 옛 계좌에 id 를 처음 붙일 때는 기기마다 같은 값이 나와야 합니다. */
 {
@@ -285,6 +362,40 @@ PLANS.forEach(([mode,acct])=>{
 });
 ok(bad9b.length===0, 'B9b 단가를 넣는 자리(setRebPrice)가 그 판단과 일치'
    + (bad9b.length?' ('+bad9b.join(', ')+')':''));
+
+/* B10. 코드와 단가는 함께 움직입니다 — setRebCode 가 앞 코드의 단가를 들고 있게 두면,
+   자동매칭처럼 '코드만 붙이는' 자리에서 옛 단가로 셈됩니다. */
+const bad10 = [];
+S.reb.mode='all'; S.reb.acct='토스';
+{
+  const r = {name:'점검용',code:'005930',cls:'한국주식',price:70000,have:10,target:''};
+  if(setRebCode(r,'069500')!==true || r.price!==0) bad10.push('코드가 바뀌면 버림 ('+r.price+')');
+  r.price = 38000;
+  [['069500','같은 코드'],[' 069500 ','공백만 다름'],['069500'.toLowerCase(),'대소문자만 다름']]
+    .forEach(([c,why])=>{ if(setRebCode(r,c)!==false || r.price!==38000) bad10.push(why+' ('+r.price+')'); });
+  if(setRebCode(r,'AAPL')!==true || r.price!==0) bad10.push('못 쓰는 코드로 바꾸면 0 ('+r.price+')');
+  if(setRebPrice(r,230)!==false || r.price!==0) bad10.push('그 뒤로도 단가를 안 받음 ('+r.price+')');
+  const r2 = {name:'점검용',code:'069500',cls:'한국주식',price:38000,have:0,target:''};
+  if(setRebCode(r2,'')!==true || r2.price!==0) bad10.push('코드를 비우면 단가도 버림 ('+r2.price+')');
+}
+ok(bad10.length===0, 'B10 코드를 정하면 앞 코드의 단가는 남지 않는다'
+   + (bad10.length?' ('+bad10.join(', ')+')':''));
+
+/* B11. 계좌 종목 쪽도 같은 짜임새 — 판단(holdPriceOk)과 대입(setHoldPrice)이 어긋나지 않는지.
+   넣지 못할 때는 들고 있던 단가·조회출처까지 버리고 이유를 남겨야 합니다. */
+const bad11 = [];
+[['KRW','069500',true],['KRW','KRX:005930',true],['KRW','KRW-BTC',true],
+ ['KRW','AAPL',false],['KRW','BTC-ETH',false],['KRW','',true],
+ ['USD','AAPL',true],['USD','NASDAQ:NVDA',true],['USD','069500',false],['USD','KRW-BTC',false]]
+ .forEach(([cur,c,want])=>{
+  if(holdPriceOk(cur,c)!==want) bad11.push(cur+'/'+(c||'(코드없음)')+' 판단='+holdPriceOk(cur,c));
+  const h = {n:'점검용',c,q:1,b:0,m:false,v:0,p:111,ps:'옛출처',pn:'',pe:''};
+  if(setHoldPrice(h, 230, cur, 'naver')!==want) bad11.push(cur+'/'+c+' 대입 판단');
+  if(want ? (h.p!==230 || h.ps!=='naver' || h.pe!=='')
+          : (h.p!==0 || h.ps!=='' || !h.pe)) bad11.push(cur+'/'+c+'='+h.p+'/'+JSON.stringify(h.ps));
+});
+ok(bad11.length===0, 'B11 계좌 종목 단가도 통화 판단과 대입이 한곳에서 일치'
+   + (bad11.length?' ('+bad11.join(', ')+')':''));
 
 ok(bad8.length===0, 'B8 후보 목록에 못 쓰는 코드가 섞이지 않는다' + (bad8.length?' ('+bad8.join(', ')+')':''));
 S.reb.mode='cash'; S.reb.acct='토스';

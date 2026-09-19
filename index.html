@@ -968,8 +968,10 @@ function renderHold(C){
   renderPanels(C, '#coinPanels', a=>a.grp==='가상자산');
 }
 
-/* 계좌 패널을 그립니다. 보유종목 탭과 가상화폐 탭이 같은 코드를 씁니다. */
-function renderPanels(C, sel, keep){
+/* 계좌 패널을 그립니다. 보유종목 탭과 가상화폐 탭이 같은 코드를 씁니다.
+   입력칸을 새로 만들므로, 고치는 중인 계좌 이름을 잃지 않게 withPendingEdits 를 지납니다. */
+function renderPanels(C, sel, keep){ withPendingEdits(()=>paintPanels(C, sel, keep)); }
+function paintPanels(C, sel, keep){
   const root = $(sel); if(!root) return;
   const clsOpts = h => ASSET_CLASSES.map(c=>`<option ${c===h.a?'selected':''}>${c}</option>`).join('');
   const list = S.accounts.map((a,ai)=>({a,ai})).filter(x=>keep(x.a));
@@ -997,7 +999,8 @@ function renderPanels(C, sel, keep){
         <td><input data-f="q" class="num" inputmode="decimal" value="${F.qty(h.q||0)}"></td>
         <td><input data-f="b" class="num" inputmode="decimal" value="${F.cost(h.b||0)}"></td>
         <td class="num mut c-avg">${F.avg(avg)}</td>
-        <td>${h.m?`<span class="mut">수동</span>`:`<input data-f="p" class="num" inputmode="decimal" value="${F.price(h.p||0)}">`}</td>
+        <td>${h.m?`<span class="mut">수동</span>`:`<input data-f="p" class="num" inputmode="decimal" value="${F.price(h.p||0)}"
+          ${holdPriceOk(a.cur, h.c)?'':`disabled title="이 코드의 시세는 ${esc(marketCur(marketOfCode(h.c))||'알 수 없는 통화')} 로 오는데 계좌 통화는 ${esc(a.cur)} 입니다. 현재가를 넣을 수 없습니다 — 코드를 먼저 고쳐주세요."`}>`}</td>
         <td${h.m?'':' class="num c-val"'}>${h.m?`<input data-f="v" class="num" inputmode="decimal" value="${F.val(h.v||0)}">`:F.money(v)}</td>
         <td class="num pfcell"><span class="c-pf ${sgn(pf)}">${signed(pf,F.pf)}</span>
             <em class="c-ret ${sgn(b?pf/b:0)}">${b?signed(pf/b,x=>pct(x,2)):'—'}</em></td>
@@ -1128,19 +1131,21 @@ function pushByName(src){
   S.accounts.forEach(a=>a.h.forEach(h=>{
     if(h===src || nameKey(h.n)!==k) return;
     h.c=src.c; h.pn=src.pn;
-    if(!h.m){ h.p=src.p; h.ps=src.ps; h.pe=src.pe; }
+    /* 단가는 받는 계좌의 통화로 맞을 때만 옮깁니다 — 달러 계좌의 230 을 원화 계좌에 그대로
+       넣으면 그 계좌 평가액이 환율만큼 틀어집니다. 판단은 setHoldPrice 한 곳에서 합니다. */
+    if(!h.m) setHoldPrice(h, src.p, a.cur, src.ps);
     n++;
   }));
   return n;
 }
-/* 이름이 같은 기존 종목에서 코드·시세를 가져옵니다. */
-function pullByName(dst){
+/* 이름이 같은 기존 종목에서 코드·시세를 가져옵니다. cur 은 가져오는 계좌의 통화입니다. */
+function pullByName(dst, cur){
   const k = nameKey(dst.n); if(!k || dst.c) return false;
   let src=null;
   S.accounts.forEach(a=>a.h.forEach(h=>{ if(!src && h!==dst && h.c && nameKey(h.n)===k) src=h; }));
   if(!src) return false;
   dst.c=src.c; dst.pn=src.pn;
-  if(!dst.m){ dst.p=src.p; dst.ps=src.ps; dst.pe=src.pe; }
+  if(!dst.m) setHoldPrice(dst, src.p, cur, src.ps);
   return true;
 }
 
@@ -1258,29 +1263,80 @@ function commitRebCode(t, opt){
   const tr = t.closest ? t.closest('tr') : null; if(!tr) return '';
   const r = S.reb.rows[+tr.dataset.i]; if(!r) return '';
   const code = (t.value||'').trim();
-  const wasCode = t.dataset.wasCode;                 /* 고치기 전 코드 */
   const viaFlush = !!(opt && opt.viaFlush);
+  const prev = r.code || '';                         /* 고치기 전 코드 — 편집 중에는 S 가 그대로입니다 */
   delete t.dataset.wasCode;
-  /* 지금 들고 있는 단가는 '고치기 전 코드'의 값입니다. 코드가 달라졌으면 시장이 같아도
-     다른 종목의 단가이므로 버립니다. */
-  const changed = wasCode != null && mktKey(wasCode) !== mktKey(code);
-  r.code = code;
   let why = '';
   if(code && !viaFlush){
     setCodeMarket(code);
     if(!codeFitsReb(code)) why = `<b>${esc(code)}</b> — ${rebWhere()}에서는 쓸 수 없는 코드입니다.`;
   }
+  const changed = setRebCode(r, code);               /* 코드가 달라지면 앞 코드의 단가를 버립니다 */
   if(changed || why || !rebPriceOk(r)){
-    r.price = 0;
+    setRebPrice(r, 0);
     /* refreshReb 는 입력칸을 다시 쓰지 않으므로, 비운 단가를 화면에도 직접 반영합니다. */
     const pi = tr.querySelector && tr.querySelector('[data-rf="price"]');
     if(pi){ pi.value = 0; pi.disabled = !rebPriceOk(r); }
     if(!viaFlush)
-      toast((why || `코드를 바꿨으니 <b>${esc(wasCode||'')}</b> 의 현재가는 버렸습니다.`)
+      toast((why || `코드를 바꿨으니 <b>${esc(prev)}</b> 의 현재가는 버렸습니다.`)
             + ` <b>새 종목 코드·시세 찾기</b>로 새 단가를 받아주세요.`, why?'err':'', why?6000:4600);
   }
   markDirty();
   return code;
+}
+
+/* ── 다시 그려도 편집 중인 값을 잃지 않도록 ──
+   편집 중인 값은 S 에 없습니다(R6). 그래서 화면을 다시 그려 입력칸이 새로 만들어지면 적던
+   값이 화면에서 통째로 사라집니다 — 시세 조회나 자동 저장이 끝나면서 renderAll 이 돌 때
+   실제로 그랬습니다.
+   여기서 확정해 버리면 안 됩니다: '토스증' 같은 조각이 이름으로 굳고 옛 이름 연결까지
+   생깁니다. 그래서 확정하지 않고, 적던 값·편집 전 값·글쇠 위치만 들고 있다가 되돌립니다.
+   (칸이 빠질 때 브라우저가 change 를 띄우는 것은 아래 painting 에서 막습니다.) */
+function pendingEdits(){
+  const keep = [];
+  const focused = t => typeof document!=='undefined' && document.activeElement===t;
+  const grab = (t, sel, mark) => keep.push({ sel, mark, value:t.value,
+    was: mark ? t.dataset[mark] : undefined,
+    focus: focused(t), s:t.selectionStart, e:t.selectionEnd });
+  $$('[data-acct]').forEach(t=>{
+    if(t.dataset && t.dataset.was != null) grab(t, `[data-acct="${t.dataset.acct}"]`, 'was');
+  });
+  $$('#tReb [data-rf="code"]').forEach(t=>{
+    const tr = t.closest && t.closest('tr');
+    if(tr && t.dataset && t.dataset.wasCode != null)
+      grab(t, `#tReb tr[data-i="${tr.dataset.i}"] [data-rf="code"]`, 'wasCode');
+  });
+  /* 설정 화면의 코드칸도 같습니다. 이 칸은 '편집 중' 표시를 따로 두지 않으므로(확정은 change
+     한 번뿐), 지금 글쇠가 있는 칸만 들고 있습니다 — 다른 칸은 이미 확정된 값입니다. */
+  $$('#tCodes [data-cf="c"]').forEach(t=>{
+    const tr = t.closest && t.closest('tr');
+    if(tr && focused(t)) grab(t, `#tCodes tr[data-g="${tr.dataset.g}"] [data-cf="c"]`, '');
+  });
+  return keep;
+}
+function restoreEdits(keep){
+  keep.forEach(k=>{
+    const t = $(k.sel); if(!t) return;                 /* 그 행·계좌가 없어졌으면 되돌릴 곳도 없습니다 */
+    t.value = k.value;
+    /* '편집 전 값' 도 함께 살립니다 — 없으면 확정이 짝 안 맞는 단가를 못 버립니다 */
+    if(k.mark) t.dataset[k.mark] = k.was;
+    if(k.mark === 'was') t.style.width = acctNameW(k.value)+'ch';
+    /* 글쇠가 있던 칸이면 자리까지 되돌립니다. 안 그러면 이어 치는 글자가 사라진 칸으로 갑니다. */
+    if(k.focus && t.focus){ try{ t.focus(); if(t.setSelectionRange) t.setSelectionRange(k.s, k.e); }catch(e){} }
+  });
+}
+/* 다시 그리는 중인가. 입력칸이 화면에서 빠질 때 브라우저는 그 칸의 change 를 그 자리에서
+   띄웁니다(크로미움에서 확인: 'paint 시작 → change(옛 칸) → paint 끝'). 그 change 를 사람이
+   낸 것으로 보고 확정하면, 적다 만 '토스증' 이 이름으로 굳고 옛 이름 연결까지 생깁니다 —
+   화면에는 확정된 값이 보여서 알아채지도 못합니다. 다시 그리는 동안 오는 change 는 사람이
+   낸 것이 아니므로 확정하지 않고, 적던 값은 restoreEdits 가 되돌립니다. */
+let painting = 0;
+/* 화면을 다시 그리는 자리는 모두 이 함수를 지납니다(R10). */
+function withPendingEdits(paint){
+  const keep = pendingEdits();
+  painting++;
+  /* 그리다가 실패해도 적던 값은 되돌려 놓습니다 */
+  try { paint(); } finally { painting--; restoreEdits(keep); }
 }
 
 /* 아직 마무리하지 않은 편집을 모두 확정합니다 — 저장 직전, 앱을 뒤로 넘길 때, 닫을 때.
@@ -1305,6 +1361,19 @@ function syncCodeInputs(){
     const h=a.h[+tr.dataset.h]; if(!h) return;
     const inp=tr.querySelector('[data-f="c"]');
     if(inp && inp!==document.activeElement && inp.value!==h.c) inp.value=h.c;
+  });
+}
+/* 현재가 칸도 상태와 맞춥니다 — 화면을 다시 만들지 않는 자리(이름·코드로 코드를 주고받을 때)
+   에서 단가가 버려지면, 화면에는 옛 숫자가 남아 평가액과 어긋나 보입니다. 잠금 여부도 함께. */
+function syncPriceInputs(){
+  document.querySelectorAll('#acctPanels tr[data-h], #coinPanels tr[data-h]').forEach(tr=>{
+    const a=S.accounts[+tr.dataset.a]; if(!a) return;
+    const h=a.h[+tr.dataset.h]; if(!h) return;
+    const inp=tr.querySelector('[data-f="p"]');
+    if(!inp || inp===document.activeElement) return;
+    const F=fmts(a.cur==='USD', a.grp==='가상자산');
+    inp.value = F.price(+h.p||0);
+    inp.disabled = !holdPriceOk(a.cur, h.c);
   });
 }
 
@@ -1361,12 +1430,22 @@ function bindPanels(sel){
       if(f==='c'){ h.ps=''; h.pe=''; }
       markDirty(); debRender(); return;
     }
+    /* 손으로 적는 현재가도 계좌 통화와 맞을 때만 받습니다(리밸런싱 표와 같은 규칙).
+       원화 계좌에 달러 코드가 들어 있으면 적은 값이 계좌 평가액을 환율만큼 틀어뜨립니다. */
+    if(f==='p'){
+      setHoldPrice(h, num(t.value), S.accounts[ai].cur);   /* 못 받으면 0 으로 맞춥니다 */
+      markDirty(); refreshAcct(ai); debRender();
+      return;                       /* 칸을 벗어날 때 change 가 h.p 로 다시 써 줍니다 */
+    }
     h[f] = num(t.value);
     markDirty(); refreshAcct(ai); debRender();
   });
 
   /* 칸을 빠져나갈 때(=Tab/클릭) 숫자 서식만 다시 입힙니다. 화면은 다시 그리지 않습니다. */
   root.addEventListener('change', e=>{
+    /* 다시 그리는 중에 오는 change 는 칸이 화면에서 빠지면서 나는 것입니다 — 사람이 낸 것이
+       아니므로 확정하지 않습니다(적던 값은 restoreEdits 가 되돌립니다). */
+    if(painting) return;
     const t=e.target;
     if(t.dataset.acct!=null){ commitAcctName(t); debRender(); return; }
     if(t.dataset.cash!=null){ const a=S.accounts[+t.dataset.cash];
@@ -1378,10 +1457,22 @@ function bindPanels(sel){
     if(f==='b') t.value=F.cost(+h.b||0);
     if(f==='p') t.value=F.price(+h.p||0);
     if(f==='v') t.value=F.val(+h.v||0);
-    if(f==='n' && pullByName(h)){ markDirty(); syncCodeInputs(); refreshAcct(+tr.dataset.a);
-      toast(`같은 이름의 종목이 이미 있어 코드 <b>${esc(h.c)}</b>를 가져왔습니다.`,'ok'); }
+    /* 코드를 주고받을 때 통화가 안 맞으면 단가는 버려집니다. 화면을 다시 만들지 않는
+       자리이므로, 버려진 단가를 칸에도 맞춰 줍니다(안 그러면 옛 숫자가 남아 평가액과
+       어긋나 보입니다). 무엇을 못 가져왔는지도 함께 알립니다. */
+    if(f==='n'){
+      const had = +h.p||0;
+      if(pullByName(h, a.cur)){
+        markDirty(); syncCodeInputs(); syncPriceInputs(); refreshAcct(+tr.dataset.a);
+        const lost = had!==(+h.p||0) || (!h.p && !!h.pe);
+        toast(`같은 이름의 종목이 이미 있어 코드 <b>${esc(h.c)}</b>를 가져왔습니다.`
+              + (lost ? ` 현재가는 통화가 달라 가져오지 않았습니다 — <b>업데이트</b>로 받아주세요.` : ''),
+              lost?'':'ok', lost?5600:2800);
+      }
+    }
     if(f==='c'){ const n=pushByName(h);
-      if(n){ markDirty(); syncCodeInputs(); S.accounts.forEach((x,i)=>refreshAcct(i)); debRender();
+      if(n){ markDirty(); syncCodeInputs(); syncPriceInputs();
+        S.accounts.forEach((x,i)=>refreshAcct(i)); debRender();
         toast(`이름이 같은 종목 ${n}개에도 코드를 함께 넣었습니다.`,'ok'); } }
   });
 
@@ -1566,6 +1657,49 @@ function setRebPrice(r, v, from){
   r.price = +v || 0;
   return true;
 }
+/* 리밸런싱 행의 코드를 정하는 단 하나의 자리입니다. 코드가 달라지면 들고 있던 단가는 앞
+   코드의 것이므로 버립니다(시장이 같아도 다른 종목입니다). 코드가 그대로면 그 코드로 여전히
+   단가를 들고 있어도 되는지만 다시 봅니다.
+   코드를 붙이는 자리가 여럿입니다 — 코드칸, 자동매칭, 계좌에서 채우기, 다른 계좌에서
+   빌려오기. 자동매칭에서 이 판단을 빠뜨려, 코드만 새로 붙고 손으로 적어 둔 옛 단가로
+   매수량을 셈한 적이 있습니다. 그래서 코드와 단가를 여기서 함께 움직입니다.
+   돌려주는 값: 코드가 달라졌는지. */
+function setRebCode(r, code){
+  if(!r) return false;
+  const next = String(code||'').trim();
+  const changed = mktKey(r.code||'') !== mktKey(next);
+  r.code = next;
+  setRebPrice(r, changed ? 0 : r.price);
+  return changed;
+}
+/* ── 계좌 보유종목의 단가도 같은 짜임새로 ──
+   이 계좌 종목에 이 코드의 단가를 들고 있어도 되나 — 시세 통화가 계좌 통화와 같아야 합니다.
+   코드가 없는 종목은 사람이 적어 둔 값을 막을 근거가 없습니다. */
+function holdPriceOk(cur, code){
+  const c = mktKey(code);
+  return !c || marketCur(marketOfCode(c)) === cur;
+}
+/* 계좌 종목에 단가를 넣는 자리 — 넣을 수 없으면 들고 있던 값까지 버리고 이유를 남깁니다.
+   새 시세만 거부하면 옛 단가로 계좌 평가액과 시점 기록이 계속 틀어집니다.
+   판단이 시세 반영과 자동매칭 두 곳에 흩어져 있었고, 자동매칭 쪽을 빠뜨렸습니다. */
+function setHoldPrice(h, v, cur, ps){
+  if(!h) return false;
+  const code = (h.c||'').trim();
+  if(!holdPriceOk(cur, code)){
+    const pcur = marketCur(marketOfCode(code));
+    h.p = 0; h.ps = '';
+    h.pe = pcur
+      ? `이 코드의 시세는 ${pcur} 로 오는데 계좌 통화는 ${cur} 입니다. 평가액이 틀어지므로 현재가를 넣지 않았습니다. 코드를 고치거나 계좌 통화를 확인해주세요.`
+      : `이 코드의 시세가 어느 통화로 오는지 알 수 없습니다(업비트 BTC·USDT 마켓 등). 원화로 환산할 수 없어 현재가를 넣지 않았습니다. 원화 마켓(KRW-…) 코드로 바꿔주세요.`;
+    return false;
+  }
+  h.p = +v || 0;
+  /* 시세로 넣은 값일 때만 조회출처·사유를 바꿉니다. 사람이 손으로 적은 값에 출처를 지우면
+     '조회 실패' 로 뱃지가 바뀌어, 안 바뀐 상태를 바뀐 것처럼 보여 줍니다. */
+  if(ps !== undefined){ h.ps = ps || ''; h.pe = ''; }
+  return true;
+}
+
 /* 지금 계획이 실제로 사고파는 곳 — 안내 문구에 씁니다. */
 function rebWhere(){
   if(S.reb.mode==='cash') return '원화로 셈하는 추가 매수';
@@ -1727,7 +1861,7 @@ function fillRow(r){
        이름만으로 고르면 같은 이름을 쓰는 다른 자산군 종목의 코드·단가가 들어옵니다. */
     const o = pickFor(row, pickable(row.cls));
     if(o){
-      if(!row.code && o.code) row.code = o.code;
+      if(!row.code && o.code) setRebCode(row, o.code);
       if(o.price>0) setRebPrice(row, o.price);
       row.have = o.have || 0;
     }
@@ -1742,7 +1876,10 @@ function fillRow(r){
          코드 비교는 다른 곳과 같은 방식(mktKey)으로 해야 합니다. 그대로 견주면
          대소문자만 다른 코드를 다른 종목으로 보아 보유량이 0 으로 남습니다. */
       if(rc && hc && mktKey(hc)!==mktKey(rc)) return;
-      if(!row.code && hc) row.code = hc;
+      /* 코드도 setRebCode 로만 정합니다 — 앞 종목에서 모아 둔 단가가 있으면 그 단가는
+         이 코드의 것이 아니므로 함께 버립니다(코드 없는 종목의 손입력 단가가 다른 종목
+         코드에 붙어 매수량이 몇 배로 틀어졌습니다). */
+      if(!row.code && hc) setRebCode(row, hc);
       /* 단가는 setRebPrice 로만 넣습니다. 바로 위에서 코드가 정해지므로, 이 계획에
          안 맞는 코드의 단가는 애초에 들어오지 않습니다. */
       if(!(row.price>0) && +h.p) setRebPrice(row, +h.p);
@@ -1752,7 +1889,7 @@ function fillRow(r){
   /* 코드가 비어 있으면 이름이 같은 다른 계좌 종목에서 빌려옵니다. 단가·보유량은 빌리지 않습니다. */
   if(!row.code){
     const y = allHoldings().find(x=>x.h.c && nameKey(x.h.n)===k);
-    if(y) row.code = y.h.c;
+    if(y) setRebCode(row, y.h.c);   /* 빌려온 코드도 마찬가지 — 짝 안 맞는 단가는 버립니다 */
   }
   /* 이 계획이 셈하는 통화와 다른 코드는 방식과 무관하게 지워, 시세를 다시 찾게 합니다.
      달러 종목 코드가 원화 계획에 남아 있으면 시세 조회가 달러 단가를 원화 자리에 넣어
@@ -1853,7 +1990,9 @@ function rebFoot(rows, pool, finalVal, need, budget){
     (left<0?` <span class="tag no">${addMode?'금액 부족':'예수금 부족'}</span>`:'');
 }
 
-function renderReb(){
+/* 표를 새로 만드므로, 적다 만 코드를 잃지 않게 withPendingEdits 를 지납니다. */
+function renderReb(){ withPendingEdits(paintReb); }
+function paintReb(){
   if(!S.reb.acct && S.accounts.length) S.reb.acct = S.accounts[0].name;
   if(!S.reb.preset) S.reb.preset = S.activePreset || (S.presets[0]&&S.presets[0].name) || '';
   const addMode = S.reb.mode==='cash';                   /* 추가 매수 방식인가 */
@@ -1992,6 +2131,7 @@ function bindReb(){
     clearTimeout(debT); debT=setTimeout(refreshReb,350);
   });
   $('#tReb').addEventListener('change', e=>{
+    if(painting) return;                  /* 표를 다시 그리며 빠지는 칸의 change 는 사람이 낸 것이 아닙니다 */
     const f = e.target.dataset.rf;
     if(f==='cls'){ S.reb.mode==='cash' ? renderReb() : refreshReb(); return; }   /* 자산군이 바뀌면 고를 수 있는 종목도 바뀝니다 */
     if(f==='code'){ commitRebCode(e.target); refreshReb(); return; }
@@ -2018,7 +2158,7 @@ function bindReb(){
        것도 다른 종목으로 바꾸는 것입니다. */
     const wasKey = nameKey(r.name||'') + '|' + mktKey(r.code||'');
     if(o && o.key!==wasKey) r.target='';
-    if(o){ r.name=o.name; r.code=o.code; r.have=o.have; setRebPrice(r, o.price); }
+    if(o){ r.name=o.name; setRebCode(r, o.code); r.have=o.have; setRebPrice(r, o.price); }
     else { r.name=''; r.code=''; r.price=0; r.have=0; r.target=''; }
     markDirty(); renderReb();
   });
@@ -2063,7 +2203,7 @@ function bindReb(){
       const h = a.h.find(x=>(rc&&mktKey(x.c)===mktKey(rc))||x.n===r.name);
       if(h){
         r.have=+h.q||0;
-        if(!(r.code||'').trim() && h.c) r.code=h.c;
+        if(!(r.code||'').trim() && h.c) setRebCode(r, h.c);
         /* 이 계좌 안의 종목이라도 코드가 이 계획에 안 맞으면 단가를 넣지 않습니다. */
         if(+h.p) setRebPrice(r, +h.p);
         n++; return;
@@ -2086,7 +2226,7 @@ function bindReb(){
          (코드가 없는 종목에서는 빌리지 않으므로 빈 코드는 여기서 먼저 걸러냅니다.) */
       const srcFits = !!src && rebPriceOk({ code:src });
       let got = false;
-      if(!(r.code||'').trim() && srcFits){ r.code=src; got=true; }
+      if(!(r.code||'').trim() && srcFits){ setRebCode(r, src); got=true; }
       /* 단가는 시장까지 맞을 때만 빌립니다. 통화만 보면 원화 증권계좌 계획에 원화 코인
          지갑의 단가가 그대로 들어옵니다(둘 다 원화라 통화 검사는 통과합니다).
          '빌려온 단가' 라고 알려 주면 setRebPrice 가 출처 코드로 판단합니다 —
@@ -2223,7 +2363,9 @@ function groupInfo(g){                       // 그룹 안에서 가장 정보�
   return g.rows.find(x=>x.h.c && x.h.ps) || g.rows.find(x=>x.h.c) || g.rows[0];
 }
 
-function renderCodes(){
+/* 코드칸을 새로 만드므로, 적다 만 코드를 잃지 않게 withPendingEdits 를 지납니다. */
+function renderCodes(){ withPendingEdits(paintCodes); }
+function paintCodes(){
   const gs = codeGroups();
   const noCode = gs.filter(g=>!groupInfo(g).h.c && !g.rows.every(x=>x.h.m)).length;
   $('#tCodes').innerHTML =
@@ -2261,8 +2403,17 @@ function renderCodes(){
 /* 그룹(=같은 이름) 전체에 코드/조회정보를 적용하고, 그 코드의 시장을 대장에 올립니다.
    mkt 은 검색 결과가 알려준 시장입니다. 없으면 setCodeMarket 이 코드 모양으로 가늠합니다. */
 function applyToGroup(g, code, pn, mkt){
-  g.rows.forEach(x=>{ x.h.c=code; if(pn) x.h.pn=pn; x.h.ps=''; x.h.pe=''; });
-  setCodeMarket(code, mkt);
+  /* mkt 은 '이 코드가 어느 시장인지' 를 검색 결과가 알려 준 것입니다. 그 근거가 있을 때만
+     들고 있던 단가를 다시 봅니다 — 자동매칭은 시세 조회를 따라 하지 않으므로, 원화 계좌에
+     달러 코드가 붙으면 옛 단가가 그대로 굳어 계좌 평가액이 환율만큼 틀어집니다.
+     사람이 코드를 손으로 적는 경우에는 근거가 없습니다. 그때 모양으로 넘겨짚어(BTC → US)
+     적어 둔 단가를 지우면 되돌릴 수도 없으니, 지우지 않고 시세 조회가 판단하게 둡니다. */
+  const told = MKTS.includes(mkt);
+  setCodeMarket(code, mkt);                  /* 시장을 먼저 올려야 아래 통화 판단이 맞습니다 */
+  g.rows.forEach(x=>{
+    x.h.c=code; if(pn) x.h.pn=pn; x.h.ps=''; x.h.pe='';
+    if(told) setHoldPrice(x.h, x.h.p, x.cur);
+  });
 }
 
 /* 코드가 비어 있는 매칭 대상을 모읍니다 — 계좌 보유종목과 리밸런싱 표의 종목 둘 다. */
@@ -2280,7 +2431,10 @@ function matchJobs(only){
     const m = rebMarket(r);
     /* m 이 비면 이 계획에서 쓸 수 있는 시장이 없다는 뜻이라 검색하지 않습니다. */
     if((r.code||'').trim() || !label || !m || !pick(m)) return;
-    jobs.push({ label, market:m, apply:(code,name,mkt)=>{ r.code = code; setCodeMarket(code, mkt); } });
+    /* 코드를 붙이면 들고 있던 단가는 '코드를 모를 때 손으로 적은 값' 입니다. setRebCode 가
+       그 단가를 버립니다 — 보유종목·설정 화면의 자동매칭은 시세 조회를 따라 하지 않으므로,
+       그냥 두면 새 코드가 옛 단가로 곧바로 셈되고 저장됩니다. */
+    jobs.push({ label, market:m, apply:(code,name,mkt)=>{ setCodeMarket(code, mkt); setRebCode(r, code); } });
   });
   return jobs;
 }
@@ -2310,6 +2464,9 @@ async function autoMatch(only, stay){
 
 function bindCodes(){
   $('#tCodes').addEventListener('change', e=>{
+    /* 다시 그리며 칸이 빠질 때 나는 change 로 확정하면, 적다 만 '0069' 가 코드로 굳고
+       대장에도 넘겨짚은 시장이 올라갑니다(화면에는 옛 코드가 보여 알아챌 수도 없습니다). */
+    if(painting) return;
     if(e.target.dataset.cf!=='c') return;
     const g = codeGroups()[+e.target.closest('tr').dataset.g]; if(!g) return;
     applyToGroup(g, e.target.value.trim(), '');
@@ -2395,19 +2552,10 @@ async function updatePrices(){
           /* 받아온 단가의 통화가 이 계좌의 통화와 다르면 넣지 않습니다. 넣으면 그 종목만이
              아니라 계좌 평가액과 이후 시점 기록까지 환율(또는 코인 시세)만큼 틀어집니다.
              업비트 BTC·USDT 마켓처럼 통화를 아예 모르는 경우도 같습니다. */
-          const pcur = marketCur(marketOfCode(code));
-          if(pcur !== a.cur){
-            /* 새 시세만 거부하면, 들고 있던 단가로 계좌 평가액이 계속 셈됩니다
-               (코드를 다른 통화 시장 코드로 바꾼 경우, 계좌 통화를 바꾼 경우).
-               안내는 '현재가를 넣지 않았다'고 하는데 숫자는 옛 단가로 나오던 문제입니다. */
-            h.p=0; h.ps=''; badCur.push(`${h.n||code}(${code})`);
-            h.pe = pcur
-              ? `이 코드의 시세는 ${pcur} 로 오는데 계좌 통화는 ${a.cur} 입니다. 평가액이 틀어지므로 현재가를 넣지 않았습니다. 코드를 고치거나 계좌 통화를 확인해주세요.`
-              : `이 코드의 시세가 어느 통화로 오는지 알 수 없습니다(업비트 BTC·USDT 마켓 등). 원화로 환산할 수 없어 현재가를 넣지 않았습니다. 원화 마켓(KRW-…) 코드로 바꿔주세요.`;
-            if(r.name) h.pn=r.name;
-            return;
-          }
-          h.p=r.price; h.ps=r.src; h.pe=''; if(r.name) h.pn=r.name;
+          /* 넣지 못하면 setHoldPrice 가 들고 있던 단가까지 버리고 이유를 적습니다 —
+             새 시세만 거부하면 옛 단가로 계좌 평가액이 계속 셈됩니다. */
+          if(!setHoldPrice(h, r.price, a.cur, r.src)) badCur.push(`${h.n||code}(${code})`);
+          if(r.name) h.pn=r.name;
           return;
         }
         else {
