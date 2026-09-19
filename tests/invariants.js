@@ -85,6 +85,62 @@ console.log('── 소스 점검 ──');
   const h = hits(/renameAcct\([^)]*draft/);
   ok(h.length===0, 'R6 편집 중 이름을 S 에 넣지 않는다' + (h.length?'\n        '+show(h):''));
 }
+/* R6b. 리밸런싱 코드칸도 편집 중에는 S 에 넣지 않습니다(R6 를 이 자리에도). */
+{
+  const h = hits(/r\[f\]\s*=/).filter(x=>/'code'/.test(x.l));
+  ok(h.length===0, "R6b 편집 중 코드를 S 에 넣지 않는다" + (h.length?'\n        '+show(h):''));
+}
+/* R6c. 마무리되지 않은 편집은 한 함수에서 모두 확정합니다 — 저장·이탈 경로가 갈라지면
+   한쪽만 고치게 됩니다(실제로 계좌 이름만 고치고 코드칸을 빠뜨렸습니다). */
+{
+  const call = hits(/flushPendingEdits\(\)/).filter(x=>!/^function/.test(x.l.trim()));
+  const old  = hits(/flushAcctNameEdits/);
+  ok(call.length>=3 && old.length===0,
+     'R6c 편집 마무리는 flushPendingEdits 한 곳으로 (' + call.length + '군데)'
+     + (old.length?'\n        옛 이름이 남아 있음:\n        '+show(old):''));
+}
+/* R8. 리밸런싱 행의 단가는 setRebPrice 로만 넣습니다.
+   '가까이에 판단이 있나'를 보는 검사로는 모자랐습니다 — 판단은 그대로 둔 채 대입 쪽 조건에서만
+   빼면 그대로 통과했습니다(빌려오기 자리에서 실제로 그랬습니다). 그래서 판단과 대입을 한
+   함수에 붙여 두고, 여기서는 '그 함수를 거치지 않는 대입' 자체를 금지합니다. */
+{
+  const h = code.map((l,i)=>({n:i+1,l}))
+    /* 0 으로 비우는 것은 언제나 안전하므로 뺍니다(버리는 쪽은 막을 이유가 없습니다). */
+    .filter(x=>/\b(r|r0|row)\.price\s*=\s*[^0\s;]/.test(x.l)
+             /* 행을 만들면서 단가를 끼워 넣는 것도 같은 대입입니다(리밸런싱 행은 code 를 함께 적습니다) */
+             || (/\bprice\s*:\s*[^0,\s]/.test(x.l) && /\bcode\s*:/.test(x.l)))
+    .filter(x=>!/setRebPrice/.test(x.l))
+    .filter(x=>!inside(x.n, ['setRebPrice']));
+  ok(h.length===0, 'R8 리밸런싱 단가는 setRebPrice 로만 넣는다' + (h.length?'\n        '+show(h):''));
+}
+/* R8b. 입력 핸들러의 공용 대입(r[f] = …)으로 단가가 흘러들면 안 됩니다 — 단가 분기를 지우면
+   사람이 적은 값이 곧바로 S 에 들어갑니다. 그래서 그 대입이 있는 블록에는 반드시 단가
+   분기(setRebPrice)가 함께 있어야 합니다. */
+{
+  /* 줄 수를 정해 두고 훑으면 자리가 길어질 때 검사가 조용히 통과합니다(inside() 가 그랬습니다).
+     그래서 이 줄을 감싸는 '가장 안쪽 블록'을 중괄호를 세어 찾고, 그 안을 봅니다. */
+  const blockOf = n => {
+    const walk = (i, step) => {                 /* 열리지 않은 짝을 만나는 줄까지 */
+      let depth = 0;
+      for(; i>0 && i<=code.length; i+=step){
+        const chars = step<0 ? [...code[i-1]].reverse() : [...code[i-1]];
+        for(const ch of chars){
+          if(ch === (step<0 ? '}' : '{')) depth++;
+          else if(ch === (step<0 ? '{' : '}')){ if(depth) depth--; else return i; }
+        }
+      }
+      return step<0 ? 1 : code.length;
+    };
+    return code.slice(walk(n,-1) - 1, walk(n,1));
+  };
+  /* 분기가 '있는 것처럼' 보이기만 해도 통과하면 안 되므로, 조건과 호출을 둘 다 봅니다
+     (조건을 if(false) 로 바꿔 두면 setRebPrice 는 그대로 남아 통과했습니다). */
+  const h = hits(/r\[f\]\s*=/).filter(x=>{
+    const blk = blockOf(x.n);
+    return !blk.some(l=>/setRebPrice\(/.test(l)) || !blk.some(l=>/f\s*===\s*'price'/.test(l));
+  });
+  ok(h.length===0, 'R8b 공용 대입 앞에 단가 분기가 살아 있다' + (h.length?'\n        '+show(h):''));
+}
 /* R7. 옛 계좌에 id 를 처음 붙일 때는 기기마다 같은 값이 나와야 합니다. */
 {
   const h = hits(/idFromSnaps\([^)]*\)\s*\|\|\s*newAcctId\(\)/);
@@ -187,6 +243,49 @@ const bad8 = [];
     });
   });
 });
+/* B9. '이 행에 단가를 넣어도 되나' 는 rebPriceOk 한 곳에서만 판단합니다.
+   검사 안에서 판단을 다시 적으면 앱에서 판단을 지워도 통과합니다(실제로 그랬습니다).
+   그래서 여기서는 앱의 rebPriceOk 를 불러 codeFitsReb 와 같은 답을 내는지만 봅니다.
+   자리마다 이 함수를 실제로 거치는지는 소스 점검 R8 이 봅니다. */
+const bad9 = [];
+PLANS.forEach(([mode,acct])=>{
+  S.reb.mode=mode; S.reb.acct=acct;
+  CODES.forEach(c=>{
+    const want = codeFitsReb(c);
+    [c, ' '+c+' ', c.toLowerCase()].forEach(v=>{         /* 공백·대소문자가 답을 바꾸면 안 됩니다 */
+      const got = rebPriceOk({name:'점검용',code:v,cls:'기타주식',price:0,have:0,target:''});
+      if(got!==want) bad9.push(mode+'/'+acct+'/'+JSON.stringify(v)+'='+got);
+    });
+  });
+  /* 코드가 없는 행은 막을 근거가 없으므로 언제나 받습니다 */
+  ['', '   ', undefined].forEach(v=>{
+    if(rebPriceOk({name:'직접입력',code:v,cls:'기타주식',price:0,have:0,target:''})!==true)
+      bad9.push(mode+'/'+acct+'/코드없음');
+  });
+  if(rebPriceOk(null)!==true || rebPriceOk(undefined)!==true) bad9.push(mode+'/'+acct+'/행없음');
+});
+ok(bad9.length===0, 'B9 단가를 넣어도 되는지는 rebPriceOk 가 codeFitsReb 와 같은 답을 낸다'
+   + (bad9.length?' ('+bad9.join(', ')+')':''));
+
+/* B9b. 단가를 넣는 유일한 자리(setRebPrice)가 그 판단과 어긋나지 않는지 — 넣을 때는 넣고,
+   못 넣을 때는 들고 있던 값까지 버려야 합니다(화면만 0 이고 S 에 남으면 셈이 달라집니다). */
+const bad9b = [];
+PLANS.forEach(([mode,acct])=>{
+  S.reb.mode=mode; S.reb.acct=acct;
+  CODES.forEach(c=>{
+    const r = {name:'점검용',code:c,cls:'기타주식',price:111,have:0,target:''};
+    const took = setRebPrice(r, 230);
+    if(took !== rebPriceOk({code:c})) bad9b.push(mode+'/'+acct+'/'+c+' 판단 어긋남');
+    if(took ? r.price!==230 : r.price!==0) bad9b.push(mode+'/'+acct+'/'+c+'='+r.price);
+    /* 빌려온 단가는 출처 코드로 봅니다 — 출처를 모르면 빌리지 않습니다 */
+    const b = {name:'점검용',code:'',cls:'기타주식',price:0,have:0,target:''};
+    if(setRebPrice(b, 230, c) !== codeFitsReb(c)) bad9b.push(mode+'/'+acct+'/빌림 '+c);
+    if(setRebPrice(b, 230, '') !== false) bad9b.push(mode+'/'+acct+'/출처 모름');
+  });
+});
+ok(bad9b.length===0, 'B9b 단가를 넣는 자리(setRebPrice)가 그 판단과 일치'
+   + (bad9b.length?' ('+bad9b.join(', ')+')':''));
+
 ok(bad8.length===0, 'B8 후보 목록에 못 쓰는 코드가 섞이지 않는다' + (bad8.length?' ('+bad8.join(', ')+')':''));
 S.reb.mode='cash'; S.reb.acct='토스';
 
