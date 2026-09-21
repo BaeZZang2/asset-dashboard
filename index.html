@@ -611,11 +611,15 @@ function normalize(st){
     Object.keys((x && x.summary && x.summary.accounts) || {}).forEach(n=>reserved.add(n)));
   const splitNames = [];
   st.accounts.forEach(a=>{
-    const nm = String(a.name==null?'':a.name).trim() || '이름 없음';
+    const raw = String(a.name==null?'':a.name);
+    const nm = raw.trim() || '이름 없음';
+    retargetReb(st, raw, nm);                    /* 공백만 다듬어도 가리키는 이름은 따라갑니다 */
     a.name = nm;
     if(!takenName.has(nm)){ takenName.add(nm); return; }
     let n = nm;
     for(let i=2; takenName.has(n) || reserved.has(n); i++) n = nm+' '+i;
+    /* 가른 계좌는 뒤에 오는 쪽이 새 이름을 받습니다. 앞 계좌가 원래 이름을 지키므로
+       가리키는 이름은 그대로 두어야 합니다 — 여기서 옮기면 남의 계좌를 가리킵니다. */
     a.name = n; takenName.add(n); splitNames.push(nm+' → '+n);
   });
   if(splitNames.length)
@@ -1000,7 +1004,7 @@ function paintPanels(C, sel, keep){
         <td><input data-f="b" class="num" inputmode="decimal" value="${F.cost(h.b||0)}"></td>
         <td class="num mut c-avg">${F.avg(avg)}</td>
         <td>${h.m?`<span class="mut">수동</span>`:`<input data-f="p" class="num" inputmode="decimal" value="${F.price(h.p||0)}"
-          ${holdPriceOk(a.cur, h.c)?'':`disabled title="이 코드의 시세는 ${esc(marketCur(marketOfCode(h.c))||'알 수 없는 통화')} 로 오는데 계좌 통화는 ${esc(a.cur)} 입니다. 현재가를 넣을 수 없습니다 — 코드를 먼저 고쳐주세요."`}>`}</td>
+          ${holdPriceOk(a.cur, h.c)?'':`disabled title="이 코드의 시세는 ${esc(marketCur(marketOfCode(h.c))||'알 수 없는 통화')} 로 오는데 계좌 통화는 ${esc(a.cur)} 입니다. 그대로 넣으면 평가액이 환율만큼 틀어지므로 받지 않습니다. 코드를 고치거나(코인은 KRW-… 마켓 코드), 시세를 쓰지 않는 종목이면 오른쪽 점을 눌러 수동으로 바꿔 평가금액을 직접 넣어주세요."`}>`}</td>
         <td${h.m?'':' class="num c-val"'}>${h.m?`<input data-f="v" class="num" inputmode="decimal" value="${F.val(h.v||0)}">`:F.money(v)}</td>
         <td class="num pfcell"><span class="c-pf ${sgn(pf)}">${signed(pf,F.pf)}</span>
             <em class="c-ret ${sgn(b?pf/b:0)}">${b?signed(pf/b,x=>pct(x,2)):'—'}</em></td>
@@ -1125,19 +1129,6 @@ function reorder(arr, order){ return order.map(i=>arr[i]); }
 
 /* ── 같은 종목명끼리 코드·시세 공유 ── */
 function nameKey(n){ return baseName(n).replace(/\s+/g,' ').trim().toLowerCase(); }
-/* 이 종목의 코드·시세를 이름이 같은 다른 보유 종목에 퍼뜨립니다. */
-function pushByName(src){
-  const k = nameKey(src.n); if(!k) return 0; let n=0;
-  S.accounts.forEach(a=>a.h.forEach(h=>{
-    if(h===src || nameKey(h.n)!==k) return;
-    h.c=src.c; h.pn=src.pn;
-    /* 단가는 받는 계좌의 통화로 맞을 때만 옮깁니다 — 달러 계좌의 230 을 원화 계좌에 그대로
-       넣으면 그 계좌 평가액이 환율만큼 틀어집니다. 판단은 setHoldPrice 한 곳에서 합니다. */
-    if(!h.m) setHoldPrice(h, src.p, a.cur, src.ps);
-    n++;
-  }));
-  return n;
-}
 /* 이름이 같은 기존 종목에서 코드·시세를 가져옵니다. cur 은 가져오는 계좌의 통화입니다. */
 function pullByName(dst, cur){
   const k = nameKey(dst.n); if(!k || dst.c) return false;
@@ -1145,7 +1136,9 @@ function pullByName(dst, cur){
   S.accounts.forEach(a=>a.h.forEach(h=>{ if(!src && h!==dst && h.c && nameKey(h.n)===k) src=h; }));
   if(!src) return false;
   dst.c=src.c; dst.pn=src.pn;
-  if(!dst.m) setHoldPrice(dst, src.p, cur, src.ps);
+  /* 빌려올 단가가 있을 때만 건드립니다 — 없는 값으로 덮으면 손으로 적어 둔 단가가 사라집니다.
+     코드가 정해졌으니 통화는 다시 봅니다(안 맞으면 setHoldPrice 가 버리고 이유를 남깁니다). */
+  if(!dst.m) setHoldPrice(dst, +src.p ? src.p : dst.p, cur, +src.p ? src.ps : undefined);
   return true;
 }
 
@@ -1200,7 +1193,9 @@ function canonicalizeAcctNames(st){
     const e = end(a.name);
     if(e===a.name || used.has(e)) return;        /* 그 이름을 다른 계좌가 쓰고 있으면 그대로 둡니다 */
     used.delete(a.name); used.add(e);
-    moved.push(a.name+' → '+e); a.name = e;
+    moved.push(a.name+' → '+e);
+    retargetReb(st, a.name, e);                  /* 고른 계좌도 새 이름으로 따라갑니다 */
+    a.name = e;
   });
   return moved;
 }
@@ -1223,10 +1218,19 @@ function resolveAcct(name){
    편집 중인 이름은 아예 S 에 넣지 않습니다(입력칸에만 둡니다). 그래서 이 함수는
    '확정된 이름'만 받습니다. 저장이 편집 중에 나가는 경우는 pushToSheet 이 먼저
    commitAcctName 을 불러 마무리합니다 — 서버에는 '마무리된 이름 + 연결'만 나갑니다. */
+/* 계좌 이름을 옮기면, 리밸런싱이 '이름'으로 기억해 둔 고른 계좌도 함께 옮깁니다.
+   빠뜨리면 rebAcct() 가 그 이름을 못 찾아 첫 계좌로 넘어가고, 복원 직후 예수금·보유량 맞추기가
+   화면에서 고른 계좌가 아닌 다른 계좌 기준으로 돕니다.
+   이름을 옮기는 자리가 셋입니다 — 이름 바꾸기, 같은 이름 가르기, 옛 시점 복원(연결 따라가기).
+   그래서 옮기는 일을 이 함수 하나로 모았습니다. */
+function retargetReb(st, prev, next){
+  if(st && st.reb && prev && st.reb.acct === prev) st.reb.acct = next;
+}
 function renameAcct(ai, name, opt){
   const a = S.accounts[ai]; if(!a) return '';
   const prev = a.name;
   a.name = name;
+  retargetReb(S, prev, name);
   const was = (opt && opt.was != null) ? opt.was : prev;
   if(opt && opt.commit && was && was !== name){
     S.aliases = S.aliases || {};
@@ -1234,7 +1238,6 @@ function renameAcct(ai, name, opt){
     S.aliases[was] = name;
     delete S.aliases[name];
   }
-  if(S.reb.acct === prev) S.reb.acct = name;
   markDirty();
   return name;
 }
@@ -1325,6 +1328,19 @@ function restoreEdits(keep){
     if(k.focus && t.focus){ try{ t.focus(); if(t.setSelectionRange) t.setSelectionRange(k.s, k.e); }catch(e){} }
   });
 }
+/* 상태를 통째로 갈아끼울 때는 적던 값을 버립니다 — 그 값은 '지금 없어진 상태' 의 것입니다.
+   되돌려 놓으면 자리(0번 칸)만 같고 계좌는 다른 계좌라, 확정할 때 엉뚱한 계좌의 이름이
+   바뀌고 옛 이름 연결까지 그 계좌에 붙습니다. */
+function discardPendingEdits(){
+  painting++;                       /* 여기서 나는 change·focusout 은 사람이 낸 것이 아닙니다 */
+  try{
+    $$('[data-acct]').forEach(t=>{ if(t.dataset) delete t.dataset.was; });
+    $$('#tReb [data-rf="code"]').forEach(t=>{ if(t.dataset) delete t.dataset.wasCode; });
+    const a = typeof document!=='undefined' && document.activeElement;
+    const d = a && a.dataset;
+    if(a && a.blur && d && (d.acct!=null || d.rf==='code' || d.cf==='c')) a.blur();
+  } finally { painting--; }
+}
 /* 다시 그리는 중인가. 입력칸이 화면에서 빠질 때 브라우저는 그 칸의 change 를 그 자리에서
    띄웁니다(크로미움에서 확인: 'paint 시작 → change(옛 칸) → paint 끝'). 그 change 를 사람이
    낸 것으로 보고 확정하면, 적다 만 '토스증' 이 이름으로 굳고 옛 이름 연결까지 생깁니다 —
@@ -1354,15 +1370,6 @@ function flushPendingEdits(){
   if(codes) refreshReb();
 }
 
-/* 화면을 다시 만들지 않고 코드칸 값만 상태와 맞춥니다(포커스 유지). */
-function syncCodeInputs(){
-  document.querySelectorAll('#acctPanels tr[data-h], #coinPanels tr[data-h]').forEach(tr=>{
-    const a=S.accounts[+tr.dataset.a]; if(!a) return;
-    const h=a.h[+tr.dataset.h]; if(!h) return;
-    const inp=tr.querySelector('[data-f="c"]');
-    if(inp && inp!==document.activeElement && inp.value!==h.c) inp.value=h.c;
-  });
-}
 /* 현재가 칸도 상태와 맞춥니다 — 화면을 다시 만들지 않는 자리(이름·코드로 코드를 주고받을 때)
    에서 단가가 버려지면, 화면에는 옛 숫자가 남아 평가액과 어긋나 보입니다. 잠금 여부도 함께. */
 function syncPriceInputs(){
@@ -1424,12 +1431,7 @@ function bindPanels(sel){
     const tr=t.closest('tr'); if(!tr||!t.dataset.f) return;
     const ai=+tr.dataset.a, hi=+tr.dataset.h;
     const h = S.accounts[ai].h[hi], f = t.dataset.f;
-    if(f==='m'){ h.m = t.checked; markDirty(); renderAll(); return; }
-    if(f==='n'||f==='c'||f==='a'){
-      h[f] = t.value;
-      if(f==='c'){ h.ps=''; h.pe=''; }
-      markDirty(); debRender(); return;
-    }
+    if(f==='n'||f==='a'){ h[f] = t.value; markDirty(); debRender(); return; }
     /* 손으로 적는 현재가도 계좌 통화와 맞을 때만 받습니다(리밸런싱 표와 같은 규칙).
        원화 계좌에 달러 코드가 들어 있으면 적은 값이 계좌 평가액을 환율만큼 틀어뜨립니다. */
     if(f==='p'){
@@ -1442,6 +1444,14 @@ function bindPanels(sel){
   });
 
   /* 칸을 빠져나갈 때(=Tab/클릭) 숫자 서식만 다시 입힙니다. 화면은 다시 그리지 않습니다. */
+  /* 칸을 벗어날 때도 확정합니다. change 만 믿을 수 없습니다 — 다시 그리면서 되돌려 놓은 값은
+     사람이 친 것이 아니라 코드가 넣은 것이라, 브라우저가 그 뒤의 blur 에 change 를 띄우지
+     않습니다(적어 둔 이름이 화면에만 남고 S 에는 안 들어갔습니다). */
+  root.addEventListener('focusout', e=>{
+    if(painting) return;
+    const t=e.target;
+    if(t.dataset && t.dataset.was != null){ commitAcctName(t); debRender(); }
+  });
   root.addEventListener('change', e=>{
     /* 다시 그리는 중에 오는 change 는 칸이 화면에서 빠지면서 나는 것입니다 — 사람이 낸 것이
        아니므로 확정하지 않습니다(적던 값은 restoreEdits 가 되돌립니다). */
@@ -1461,19 +1471,16 @@ function bindPanels(sel){
        자리이므로, 버려진 단가를 칸에도 맞춰 줍니다(안 그러면 옛 숫자가 남아 평가액과
        어긋나 보입니다). 무엇을 못 가져왔는지도 함께 알립니다. */
     if(f==='n'){
-      const had = +h.p||0;
       if(pullByName(h, a.cur)){
-        markDirty(); syncCodeInputs(); syncPriceInputs(); refreshAcct(+tr.dataset.a);
-        const lost = had!==(+h.p||0) || (!h.p && !!h.pe);
+        markDirty(); syncPriceInputs(); refreshAcct(+tr.dataset.a);
+        /* 통화가 안 맞아서 못 가져온 경우에만 그렇게 말합니다. 값이 달라진 것만 보고
+           말하면, 빌려온 쪽에 단가가 없었을 뿐인데 통화 탓을 합니다. */
+        const lost = !holdPriceOk(a.cur, h.c);
         toast(`같은 이름의 종목이 이미 있어 코드 <b>${esc(h.c)}</b>를 가져왔습니다.`
-              + (lost ? ` 현재가는 통화가 달라 가져오지 않았습니다 — <b>업데이트</b>로 받아주세요.` : ''),
+              + (lost ? ` 현재가는 통화가 달라 가져오지 않았습니다 — 코드를 고치거나 <b>업데이트</b>로 받아주세요.` : ''),
               lost?'':'ok', lost?5600:2800);
       }
     }
-    if(f==='c'){ const n=pushByName(h);
-      if(n){ markDirty(); syncCodeInputs(); syncPriceInputs();
-        S.accounts.forEach((x,i)=>refreshAcct(i)); debRender();
-        toast(`이름이 같은 종목 ${n}개에도 코드를 함께 넣었습니다.`,'ok'); } }
   });
 
   root.addEventListener('click', e=>{
@@ -1824,6 +1831,27 @@ function switchRebMode(){
 }
 
 /* 지금 계획의 통화와 맞지 않는 코드·단가를 비웁니다. 비운 행 수를 돌려줍니다. */
+/* 불러온 상태를 받아들이는 단 하나의 자리입니다 — 처음 켤 때, 서버에서 받아올 때,
+   옛 시점을 복원할 때, 파일로 가져올 때 모두 여기를 지납니다.
+   입력하는 길을 모두 막아도 '이미 저장되어 있던 값' 은 이 길로 들어옵니다. */
+function loadState(st){
+  discardPendingEdits();            /* 적던 값은 지금 없어질 상태의 것입니다 */
+  S = normalize(st);
+  scrubRebPrices();
+  return S;
+}
+/* 저장해 둔 리밸런싱 행에 이 계획에서 쓸 수 없는 코드 + 단가가 함께 있을 수 있습니다
+   (다른 기기에서 계좌를 바꾼 뒤 저장, 옛 시점 복원 등). 그대로 두면 화면의 단가칸은 잠겨
+   있는데 셈은 그 단가로 돌아가, 매수가능량·목표수량이 환율만큼 틀린 채로 보입니다.
+   코드는 사람이 적은 것이라 지우지 않습니다 — 고칠 수 있게 남기고, 쓸 수 없는 단가만 버립니다
+   (여기서 코드까지 지우면 무엇을 고쳐야 하는지도 사라집니다). */
+function scrubRebPrices(){
+  let cut = 0;
+  ((S.reb && S.reb.rows) || []).forEach(r=>{
+    if(r && +r.price && !rebPriceOk(r)){ setRebPrice(r, 0); cut++; }
+  });
+  return cut;
+}
 function dropUnfitCodes(){
   let cut = 0;
   S.reb.rows.forEach(r=>{
@@ -2129,6 +2157,12 @@ function bindReb(){
     markDirty();
     if(f==='name') return;   /* 종목명은 계산에 쓰지 않으므로 다시 그릴 이유가 없습니다 */
     clearTimeout(debT); debT=setTimeout(refreshReb,350);
+  });
+  /* 코드칸도 벗어날 때 확정합니다 — 되돌려 놓은 값에는 change 가 오지 않습니다(위와 같은 이유). */
+  $('#tReb').addEventListener('focusout', e=>{
+    if(painting) return;
+    const t=e.target;
+    if(t.dataset && t.dataset.wasCode != null){ commitRebCode(t); refreshReb(); }
   });
   $('#tReb').addEventListener('change', e=>{
     if(painting) return;                  /* 표를 다시 그리며 빠지는 칸의 change 는 사람이 낸 것이 아닙니다 */
@@ -2463,15 +2497,20 @@ async function autoMatch(only, stay){
 }
 
 function bindCodes(){
-  $('#tCodes').addEventListener('change', e=>{
-    /* 다시 그리며 칸이 빠질 때 나는 change 로 확정하면, 적다 만 '0069' 가 코드로 굳고
-       대장에도 넘겨짚은 시장이 올라갑니다(화면에는 옛 코드가 보여 알아챌 수도 없습니다). */
-    if(painting) return;
-    if(e.target.dataset.cf!=='c') return;
-    const g = codeGroups()[+e.target.closest('tr').dataset.g]; if(!g) return;
-    applyToGroup(g, e.target.value.trim(), '');
+  /* 코드칸을 확정하는 자리 — change 와 focusout 둘 다 지납니다. 다시 그리면서 되돌려 놓은
+     값은 코드가 넣은 것이라 그 뒤의 blur 에 change 가 오지 않습니다(다 적어 놓고 칸을
+     벗어났는데 조용히 사라졌습니다). 이미 확정된 값이면 아무것도 하지 않습니다. */
+  const commitCode = t=>{
+    if(painting || !t.dataset || t.dataset.cf!=='c') return;
+    const tr = t.closest && t.closest('tr'); if(!tr) return;
+    const g = codeGroups()[+tr.dataset.g]; if(!g) return;
+    const code = (t.value||'').trim();
+    if(mktKey(code) === mktKey(groupInfo(g).h.c)) return;      /* 바뀐 것이 없으면 그대로 */
+    applyToGroup(g, code, '');
     markDirty(); renderAll(); renderCodes();
-  });
+  };
+  $('#tCodes').addEventListener('change', e=>commitCode(e.target));
+  $('#tCodes').addEventListener('focusout', e=>commitCode(e.target));
   $('#tCodes').addEventListener('click', async e=>{
     const b=e.target.closest('[data-find]'); if(!b) return;
     const g = codeGroups()[+b.dataset.find]; if(!g) return;
@@ -2699,7 +2738,7 @@ async function pullFromSheet(force, silent){
       return;
     }
 
-    S = normalize(srv); baseRev = +S.rev||0; dirty = false; persist();
+    loadState(srv); baseRev = +S.rev||0; dirty = false; persist();
     synced = true; LS.set('ad.synced', true);
     syncing=false; setSync('불러옴 · ' + new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'}));
     renderAll();
@@ -2734,7 +2773,7 @@ function conflictModal(srv, snaps){
     toast('이 기기 내용으로 맞췄습니다.','ok');
   };
   m.querySelector('#cfTakeSrv').onclick = ()=>{
-    S = normalize(srv); baseRev = +S.rev||0; dirty=false; persist();
+    loadState(srv); baseRev = +S.rev||0; dirty=false; persist();
     SNAPS = snaps ? normSnaps(snaps) : SNAPS; LS.set('ad.snaps',SNAPS);
     m.remove(); setSync('시트 내용으로 맞춤'); renderAll();
     toast('시트 내용으로 맞췄습니다.','ok');
@@ -3100,7 +3139,7 @@ function bindStat(){
           const st = Object.assign({}, r.state, { aliases:keepAliases });
           /* 이름이 그 시점으로 되돌아가면 기록이 또 갈라지므로 지금 이름으로 맞춰 둡니다. */
           const moved = Array.isArray(st.accounts) ? canonicalizeAcctNames(st) : [];
-          S=normalize(st); persist(); dirty=true; renderAll(); show('dash');
+          loadState(st); persist(); dirty=true; renderAll(); show('dash');
           toast(`${keyLabel(l.dataset.snapload)} 시점을 불러왔습니다.`
                 + (moved.length ? `<br>이름이 바뀐 계좌는 지금 이름으로 맞췄습니다: ${esc(moved.join(', '))}` : ''),
                 'ok', moved.length?7000:2800); }
@@ -3165,7 +3204,7 @@ function bindCfg(){
     const i=document.createElement('input'); i.type='file'; i.accept='.json';
     i.onchange=()=>{ const f=i.files[0]; if(!f) return; const rd=new FileReader();
       rd.onload=()=>{ try{ const j=JSON.parse(rd.result); if(!j.accounts) throw new Error('형식이 맞지 않습니다.');
-        S=normalize(j); markDirty(); renderAll(); toast('가져왔습니다. 저장하기를 눌러 서버에도 반영하세요.','ok'); }
+        loadState(j); markDirty(); renderAll(); toast('가져왔습니다. 저장하기를 눌러 서버에도 반영하세요.','ok'); }
         catch(e){ toast('가져오기 실패: '+e.message,'err'); } };
       rd.readAsText(f); };
     i.click();
@@ -3202,7 +3241,7 @@ function init(){
   $('#btnMatchAll').onclick  = ()=>autoMatch();
   $('#btnMatchAll2').onclick = ()=>autoMatch();
   $('#btnMatchCoin').onclick = ()=>autoMatch('CRYPTO');
-  S = normalize(S);
+  loadState(S);
   bindHold(); bindReb(); bindCodes(); bindStat(); bindCfg();
   renderAll();
   show('dash');   /* 앱을 켜면 언제나 '한눈에' 탭에서 시작합니다. */

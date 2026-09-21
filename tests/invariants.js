@@ -191,12 +191,41 @@ console.log('── 소스 점검 ──');
     if(!blk.some(l=>/painting\s*\+\+/.test(l)) || !blk.some(l=>/painting\s*--/.test(l)))
       bad.push('withPendingEdits 가 painting 을 올리고 내리지 않음');
   }
-  hits(/addEventListener\('change'/).forEach(x=>{
-    const blk = blockOf(x.n+1);                     /* 핸들러 본문 */
-    /* 확정하는 자리를 이름으로 모아 둡니다 — 설정 화면의 코드칸(applyToGroup)을 빠뜨렸습니다 */
-    if(blk.some(l=>/commitAcctName\(|commitRebCode\(|applyToGroup\(/.test(l))
-       && !blk.some(l=>/if\(painting\)\s*return/.test(l)))
-      bad.push(x.n+'줄 change 핸들러에 painting 확인이 없음');
+  /* 확정하는 자리를 이름으로 모아 둡니다 — 설정 화면의 코드칸(applyToGroup)을 빠뜨렸습니다.
+     칸을 벗어날 때(focusout)도 확정하므로 함께 봅니다: 되돌려 놓은 값에는 change 가 오지
+     않아서, focusout 이 없으면 다 적어 놓고 칸을 벗어났는데 조용히 사라집니다. */
+  const COMMITS = /commitAcctName\(|commitRebCode\(|applyToGroup\(/;
+  const guards  = /if\(painting[^)]*\)\s*return|painting\s*\|\|/;
+  /* 핸들러가 'e.target 을 넘기는 한 줄' 이면 그 함수 안까지만 봅니다. 부르는 함수를 모두
+     따라 들어가게 했더니 어느 핸들러든 모든 낱말이 걸려, 아무것도 못 잡는 검사가 됐습니다. */
+  const oneLevel = blk => {
+    const out = blk.slice();
+    blk.forEach(l=>{
+      const m = /\b([A-Za-z_$][\w$]*)\(e\.target\)/.exec(l); if(!m) return;
+      const at = code.findIndex(x=>new RegExp('^\\s*(function '+m[1]+'\\b|const '+m[1]+'\\s*=)').test(x));
+      if(at>=0) out.push(...blockOf(at+1));
+    });
+    return out.join('\n');
+  };
+  /* 한 줄짜리 핸들러(e=>commitCode(e.target))는 다음 줄이 본문이 아닙니다 — 다음 줄만 보다가
+     엉뚱한 핸들러를 보고 있었습니다. 여는 줄 자체를 먼저 보고, 중괄호를 열 때만 본문을 붙입니다. */
+  const handlerBody = n =>
+    oneLevel(/\{\s*$/.test(code[n-1]) ? [code[n-1], ...blockOf(n+1)] : [code[n-1]]);
+  hits(/addEventListener\('(change|focusout)'/).forEach(x=>{
+    const body = handlerBody(x.n);
+    if(COMMITS.test(body) && !guards.test(body))
+      bad.push(x.n+'줄 핸들러에 painting 확인이 없음');
+  });
+  /* 칸을 벗어날 때(focusout)도 확정해야 합니다 — 다시 그리며 되돌려 놓은 값은 코드가 넣은
+     것이라, 브라우저가 그 뒤의 blur 에 change 를 띄우지 않습니다(다 적어 놓고 칸을 벗어났는데
+     조용히 사라졌습니다). 표시와 확정 함수가 한 핸들러 안에 함께 있어야 합니다. */
+  [['was','commitAcctName\\('], ['wasCode','commitRebCode\\('], ['cf','applyToGroup\\(']]
+  .forEach(([mark, fn])=>{
+    const seen = hits(/addEventListener\('focusout'/).some(x=>{
+      const body = handlerBody(x.n);
+      return new RegExp('\\b'+mark+'\\b').test(body) && new RegExp(fn).test(body);
+    });
+    if(!seen) bad.push(mark+' 칸은 벗어날 때 확정하지 않음');
   });
   ok(bad.length===0, 'R10b 다시 그리는 중의 change 로는 확정하지 않는다'
      + (bad.length?' ('+bad.join(', ')+')':''));
@@ -217,6 +246,37 @@ console.log('── 소스 점검 ──');
     return !blk.some(l=>/setHoldPrice\(/.test(l)) || !blk.some(l=>/f\s*===\s*'p'/.test(l));
   });
   ok(h.length===0, 'R11b 보유종목 공용 대입 앞에 단가 분기가 살아 있다' + (h.length?'\n        '+show(h):''));
+}
+/* R13. 화면에 없는 칸을 다루는 분기가 남아 있으면 안 됩니다. 닿지 않는 코드에 검사를 붙여
+   두면 '덮여 있는 것처럼' 보입니다 — 보유종목 표에서 코드 칸이 없어졌는데 그 분기와 함수가
+   남아, 통화 검사를 거기에 붙여 두고 통과를 확인하고 있었습니다. */
+{
+  const all = code.join('\n');
+  const names = (re, cut) => new Set((all.match(re)||[]).map(s=>s.slice(cut,-1)));
+  const rendered = new Set([...names(/data-f="([a-z]+)"/g, 8), ...names(/data-rf="([a-zA-Z]+)"/g, 9),
+                            ...names(/data-cf="([a-z]+)"/g, 9)]);
+  const h = [...names(/f==='([a-zA-Z]+)'/g, 5)].filter(f=>!rendered.has(f));
+  ok(h.length===0, 'R13 화면에 없는 칸의 분기가 남아 있지 않다'
+     + (h.length?' ('+h.join(', ')+')':''));
+}
+/* R12. 불러온 상태는 loadState 한 곳으로만 받아들입니다 — 입력하는 길을 모두 막아도
+   '이미 저장되어 있던 값' 은 이 길로 들어옵니다(서버·옛 시점·파일 가져오기·처음 켤 때). */
+{
+  const h = hits(/S\s*=\s*normalize\(/).filter(x=>!inside(x.n, ['loadState']));
+  ok(h.length===0, 'R12 불러오기는 loadState 로만 한다' + (h.length?'\n        '+show(h):''));
+}
+/* R12b. 리밸런싱이 고른 계좌(이름)를 옮기는 것은 retargetReb 뿐입니다 — 이름을 옮기는 자리가
+   셋인데(이름 바꾸기·같은 이름 가르기·옛 시점 복원) 복원 쪽에서 빠뜨렸습니다.
+   아래 두 가지는 '옮기기' 가 아니라서 뺍니다. 새로 빼려면 왜 옮기기가 아닌지 적으세요. */
+{
+  const ALLOW = [
+    /if\(!S\.reb\.acct/,            /* 비어 있을 때 첫 계좌로 채우는 기본값 */
+    /e\.target\.value/,             /* 사람이 드롭다운에서 고른 것 */
+  ];
+  const h = hits(/\breb\.acct\s*=(?!=)/)
+    .filter(x=>!ALLOW.some(re=>re.test(x.l)))
+    .filter(x=>!inside(x.n, ['retargetReb']));
+  ok(h.length===0, 'R12b 고른 계좌 이름을 옮기는 것은 retargetReb 뿐' + (h.length?'\n        '+show(h):''));
 }
 /* R7. 옛 계좌에 id 를 처음 붙일 때는 기기마다 같은 값이 나와야 합니다. */
 {
@@ -396,6 +456,66 @@ const bad11 = [];
 });
 ok(bad11.length===0, 'B11 계좌 종목 단가도 통화 판단과 대입이 한곳에서 일치'
    + (bad11.length?' ('+bad11.join(', ')+')':''));
+
+/* B12. 불러온 뒤에는 어떤 행도 '쓸 수 없는 단가' 를 들고 있지 않아야 합니다.
+   입력하는 길을 다 막아도 저장되어 있던 값은 불러오기로 들어옵니다 — 그대로 두면 화면의
+   단가칸은 잠겨 있는데 셈은 그 단가로 돕니다. */
+const bad12 = [];
+[['cash','토스'],['all','토스'],['all','해외'],['all','업비트']].forEach(([mode,acct])=>{
+  const st = { accounts:[
+      {name:'토스',cur:'KRW',grp:'투자',cash:1e7,h:[]},
+      {name:'해외',cur:'USD',grp:'투자',cash:5000,h:[]},
+      {name:'업비트',cur:'KRW',grp:'가상자산',cash:1e6,h:[]} ],
+    fx:{usdkrw:1400}, mkts:{ 'AAPL':'US', '069500':'KR', 'KRW-BTC':'CRYPTO', 'BTC-ETH':'CRYPTO_ALT' },
+    reb:{ acct, preset:'', mode, budget:1e7, tq:2, rows:CODES.map(c=>
+      ({name:'점검용',code:c,cls:'기타주식',price:1234,have:0,target:''})) } };
+  loadState(st);
+  S.reb.rows.forEach(r=>{
+    if(+r.price && !rebPriceOk(r)) bad12.push(mode+'/'+acct+'/'+r.code+'='+r.price);
+    if(!(r.code||'').trim()) bad12.push(mode+'/'+acct+': 코드를 지워 버림');   /* 고칠 거리를 남겨야 합니다 */
+  });
+});
+ok(bad12.length===0, 'B12 불러온 뒤 쓸 수 없는 단가는 남지 않는다(코드는 남긴다)'
+   + (bad12.length?' ('+bad12.join(', ')+')':''));
+
+/* B13. 계좌 이름이 옮겨지면 리밸런싱이 고른 계좌도 따라가야 합니다 — 안 따라가면 rebAcct()
+   가 첫 계좌로 넘어가, 예수금·보유량 맞추기가 엉뚱한 계좌 기준으로 돕니다. */
+const bad13 = [];
+{
+  /* (1) 옛 시점 복원 — 연결을 따라 이름이 옮겨지는 경우 */
+  const st = { accounts:[
+      {name:'토스',cur:'KRW',grp:'투자',cash:0,h:[]},
+      {name:'해외',cur:'USD',grp:'투자',cash:5000,h:[]} ],
+    fx:{usdkrw:1400}, aliases:{ '해외':'해외증권' }, tq:2,
+    reb:{ acct:'해외', preset:'', mode:'all', budget:0, tq:2, rows:[] } };
+  canonicalizeAcctNames(st);
+  loadState(st);
+  if(S.accounts[1].name!=='해외증권') bad13.push('이름이 안 옮겨짐: '+S.accounts[1].name);
+  if(S.reb.acct!=='해외증권') bad13.push('고른 계좌가 안 따라감: '+S.reb.acct);
+  if(rebAcct().name!=='해외증권') bad13.push('rebAcct 가 다른 계좌: '+rebAcct().name);
+  /* (2) 이름 바꾸기 */
+  S.reb.acct = S.accounts[1].name;
+  renameAcct(1, '해외증권2', { commit:true, was:'해외증권' });
+  if(S.reb.acct!=='해외증권2') bad13.push('이름 바꿀 때 안 따라감: '+S.reb.acct);
+  /* (3) 같은 이름 가르기 — 앞 계좌가 원래 이름을 지키므로 가리키는 이름은 그대로여야 합니다 */
+  const dup = { accounts:[
+      {name:'토스',cur:'KRW',grp:'투자',cash:1,h:[]},
+      {name:'토스',cur:'KRW',grp:'투자',cash:2,h:[]} ],
+    fx:{usdkrw:1400}, reb:{ acct:'토스', preset:'', mode:'all', budget:0, tq:2, rows:[] } };
+  loadState(dup);
+  if(S.reb.acct!=='토스' || rebAcct().cash!==1)
+    bad13.push('가른 뒤 앞 계좌를 가리켜야 함: '+S.reb.acct+'/'+rebAcct().cash);
+}
+ok(bad13.length===0, 'B13 이름이 옮겨져도 고른 계좌는 그대로 따라간다'
+   + (bad13.length?' ('+bad13.join(', ')+')':''));
+
+/* 뒤 검사들이 쓰는 상태를 되돌려 둡니다 */
+S = normalize({ accounts:[
+  {name:'토스',cur:'KRW',grp:'투자',cash:1e7,h:[H('KODEX 200','069500','한국주식',10,38000)]},
+  {name:'해외',cur:'USD',grp:'투자',cash:5000,h:[H('애플','AAPL','미국주식',3,230)]},
+  {name:'업비트',cur:'KRW',grp:'가상자산',cash:1e6,h:[H('비트코인','KRW-BTC','가상화폐',0.1,1.5e8)]},
+  {name:'섞인 계좌',cur:'KRW',grp:'투자',cash:0,h:[H('애플','AAPL','미국주식',5,230)]} ],
+  fx:{usdkrw:1400}, reb:{acct:'토스',preset:'',mode:'all',budget:0,rows:[]} });
 
 ok(bad8.length===0, 'B8 후보 목록에 못 쓰는 코드가 섞이지 않는다' + (bad8.length?' ('+bad8.join(', ')+')':''));
 S.reb.mode='cash'; S.reb.acct='토스';

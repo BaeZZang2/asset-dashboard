@@ -59,7 +59,18 @@ const ok=(c,l)=>{ if(!c) failed++; console.log((c?'  OK  ':'  실패')+' '+l); }
      '되돌리는 동안 S 는 그대로 — 조각난 이름이 확정되지 않습니다');
   const focused = await p.evaluate(()=>document.activeElement && document.activeElement.dataset.acct);
   ok(focused==='0', `글쇠도 그 칸에 남음 (${focused}) — 이어 치는 글자가 사라진 칸으로 가지 않습니다`);
+  /* 되돌려 놓은 값은 코드가 넣은 것이라, 브라우저가 그 뒤의 blur 에 change 를 띄우지
+     않습니다. 그래서 '더 치지 않고 그대로 칸을 벗어나는' 길을 따로 봅니다 — 예전에는 여기서
+     이름이 화면에만 남고 S 에는 끝내 안 들어갔습니다. */
+  await p.locator('[data-acct="0"]').first().blur();
+  await p.waitForTimeout(300);
+  const blurred = await p.evaluate(()=>({ nm:S.accounts[0].name, al:(S.aliases||{})['토스'] }));
+  ok(blurred.nm==='토스증',
+     `더 치지 않고 칸만 벗어나도 확정됨 (예전에는 '토스' 로 남았습니다) — ${blurred.nm}`);
+  ok(blurred.al==='토스증', `옛 이름 연결도 함께 (${blurred.al})`);
+
   /* 이어서 적고 확정하면 온전한 이름이 됩니다 */
+  await p.locator('[data-acct="0"]').first().click();
   await p.keyboard.type('권');
   await p.locator('[data-acct="0"]').first().blur();
   await p.waitForTimeout(300);
@@ -174,6 +185,29 @@ const ok=(c,l)=>{ if(!c) failed++; console.log((c?'  OK  ':'  실패')+' '+l); }
   ok(pulled.locked, '통화가 안 맞아 그 칸은 잠김');
   ok(/가져오지 않았습니다/.test(pulled.toast),
      `무엇을 못 가져왔는지 알려 줌 — ${pulled.toast.slice(0,70)}`);
+
+  /* ── 6) 상태를 통째로 갈아끼울 때는 적던 값을 버리는지 ── */
+  /* 서버에서 받아오거나 옛 시점을 복원하면 계좌가 통째로 바뀝니다. 그때 적던 값을 되돌려
+     놓으면 자리(0번 칸)만 같고 계좌는 다른 계좌라, 확정할 때 엉뚱한 계좌의 이름이 바뀝니다. */
+  await p.getByRole('button',{name:'보유종목'}).click();
+  await p.waitForTimeout(300);
+  const swapped = await p.evaluate(()=>{
+    const box = document.querySelector('[data-acct="0"]');
+    box.focus(); box.dataset.was = S.accounts[0].name; box.value = '내가적던이름';
+    /* 서버에서 아주 다른 상태를 받아온 상황 */
+    loadState({ accounts:[{name:'완전다른계좌',cur:'KRW',grp:'투자',cash:0,h:[]}],
+                fx:{usdkrw:1400}, reb:{acct:'완전다른계좌',preset:'',mode:'all',budget:0,tq:2,rows:[]} });
+    renderAll();
+    const after = document.querySelector('[data-acct="0"]');
+    return { nm:S.accounts[0].name, box:after.value, mark:after.dataset.was,
+             aliases:JSON.stringify(S.aliases||{}) };
+  });
+  await p.waitForTimeout(200);
+  ok(swapped.nm==='완전다른계좌',
+     `갈아끼운 계좌 이름이 그대로 (예전에는 적던 이름이 이 계좌에 붙었습니다) — ${swapped.nm}`);
+  ok(swapped.box==='완전다른계좌', `칸에도 적던 값이 되돌아오지 않음 — ${swapped.box}`);
+  ok(swapped.mark===undefined, '편집 표시도 남지 않음');
+  ok(swapped.aliases==='{}', `엉뚱한 옛 이름 연결이 생기지 않음 — ${swapped.aliases}`);
 
   ok(errs.length===0, errs.length ? '페이지 오류: '+errs.join(' | ') : '페이지 오류 없음');
   await b.close(); srv.close();

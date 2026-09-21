@@ -54,27 +54,9 @@ SNAPS=[];
   ok(!!krw.pe && /USD/.test(krw.pe), '왜 못 넣었는지 이유가 남음');
   ok(holdPriceOk('KRW','AAPL')===false && holdPriceOk('USD','AAPL')===true, '판단은 한 함수에서');
 }
-/* 이름으로 퍼뜨릴 때도 통화를 봅니다 — 달러 계좌의 230 이 원화 계좌로 넘어가면 안 됩니다 */
-S = normalize({ accounts:[
-  {name:'해외',cur:'USD',grp:'투자',cash:0,h:[H('애플','AAPL','미국주식',5,230)]},
-  {name:'토스',cur:'KRW',grp:'투자',cash:0,h:[H('애플','','미국주식',5,0)]} ],
-  fx:{usdkrw:1400} });
-SNAPS=[];
-{
-  const src = S.accounts[0].h[0], dst = S.accounts[1].h[0];
-  const n = pushByName(src);
-  ok(n===1, '같은 이름 종목 한 곳에 퍼뜨림');
-  ok(dst.c==='AAPL', '코드는 옮겨짐 (' + dst.c + ')');
-  ok(dst.p===0,
-     '달러 단가는 원화 계좌로 옮기지 않음 (예전에는 230 이 원화로 들어갔습니다) — 실제 ' + dst.p);
-  ok(!!dst.pe, '이유가 남음');
-  /* 같은 통화끼리는 정상적으로 옮깁니다 */
-  S.accounts.push({id:'a3',name:'해외2',cur:'USD',grp:'투자',cash:0,h:[H('애플','','미국주식',1,0)]});
-  const n2 = pushByName(src);
-  const d2 = S.accounts[2].h[0];
-  ok(d2.p===230, '같은 통화 계좌에는 단가까지 옮김 (' + d2.p + ')');
-}
-/* 이름으로 가져올 때도 같습니다 */
+/* 이름으로 코드를 가져올 때도 통화를 봅니다 — 달러 계좌의 230 이 원화 계좌로 넘어가면
+   안 됩니다. (이름으로 '퍼뜨리는' 쪽은 보유종목 표에서 코드 칸이 없어져 더는 쓰이지 않아
+   지웠습니다 — 닿지 않는 코드에 검사를 붙여 두면 덮여 있는 것처럼 보입니다.) */
 S = normalize({ accounts:[
   {name:'해외',cur:'USD',grp:'투자',cash:0,h:[H('애플','AAPL','미국주식',5,230)]},
   {name:'토스',cur:'KRW',grp:'투자',cash:0,h:[H('','','미국주식',1,0)]} ],
