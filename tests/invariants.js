@@ -247,6 +247,37 @@ console.log('── 소스 점검 ──');
   });
   ok(h.length===0, 'R11b 보유종목 공용 대입 앞에 단가 분기가 살아 있다' + (h.length?'\n        '+show(h):''));
 }
+/* R14. 자동 저장은 고치던 값을 확정하지 않습니다. 사람이 아직 칸에 글쇠를 두고 있는데,
+   앞선 편집으로 예약된 6초 타이머가 돌아 적다 만 이름·코드가 확정되어 서버까지 올라갔습니다.
+   확정은 사람이 한 행동(칸을 벗어남·저장 누름·앱을 떠남)일 때만 합니다. */
+{
+  const bad = [];
+  const at = code.findIndex(l=>/^async function pushToSheet\b/.test(l));
+  if(at < 0) bad.push('pushToSheet 를 찾지 못함');
+  else {
+    const body = blockOf(at+2).join('\n');
+    if(!/flushPendingEdits\(\)/.test(body)) bad.push('저장 전에 확정하지 않음');
+    else if(!/if\(!auto\)\s*flushPendingEdits\(\)/.test(body)) bad.push('자동 저장에서도 확정함');
+  }
+  ok(bad.length===0, 'R14 자동 저장은 고치던 값을 확정하지 않는다' + (bad.length?' ('+bad.join(', ')+')':''));
+}
+/* R14b. 되돌릴 자리는 '몇 번째 칸' 이 아니라 그 값이 속한 것으로 찾습니다 — 자리로 찾으면
+   그 사이에 순서가 바뀌었을 때(패널 끌어 옮기기는 blur 없이 다시 그립니다) 같은 자리에 온
+   다른 계좌에 초안이 붙고, 칸을 벗어나는 순간 엉뚱한 계좌의 이름이 바뀝니다. */
+{
+  const bad = [];
+  const at = code.findIndex(l=>/^function pendingEdits\b/.test(l));
+  if(at < 0) bad.push('pendingEdits 를 찾지 못함');
+  else {
+    const body = blockOf(at+2).join('\n');
+    if(!/\bid\b/.test(body) || !/findIndex/.test(body)) bad.push('계좌를 id 로 다시 찾지 않음');
+    /* 잡아 둘 때의 자리 번호를 그대로 선택자에 박아 두면 안 됩니다 */
+    if(/\[data-acct="\$\{t\.dataset\.acct\}"\]/.test(body)) bad.push('계좌를 자리 번호로 되찾음');
+    if(/tr\[data-g="\$\{tr\.dataset\.g\}"\]/.test(body)) bad.push('설정 화면을 자리 번호로 되찾음');
+  }
+  ok(bad.length===0, 'R14b 되돌릴 자리는 자리 번호가 아니라 그 값이 속한 것으로 찾는다'
+     + (bad.length?' ('+bad.join(', ')+')':''));
+}
 /* R13. 화면에 없는 칸을 다루는 분기가 남아 있으면 안 됩니다. 닿지 않는 코드에 검사를 붙여
    두면 '덮여 있는 것처럼' 보입니다 — 보유종목 표에서 코드 칸이 없어졌는데 그 분기와 함수가
    남아, 통화 검사를 거기에 붙여 두고 통과를 확인하고 있었습니다. */

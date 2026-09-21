@@ -125,4 +125,120 @@ loadState({ accounts:[
   ok(dst.p===230, '빌려올 단가가 있으면 그 값으로 (' + dst.p + ')');
 }
 
+/* ══ 라운드 23 지적 A: 순서가 바뀌어도 초안이 제 계좌를 찾아가는지 ══ */
+/* 계좌 이름을 적는 중에 패널을 끌어 옮기면 blur 없이 다시 그려집니다. 자리 번호로 되돌리면
+   그 자리에 온 다른 계좌에 초안이 붙고, 칸을 벗어나는 순간 그 계좌의 이름이 바뀝니다.
+   여기서는 앱의 pendingEdits/restoreEdits 를 그대로 부릅니다 — 판단을 검사 안에 다시 적으면
+   앱에서 자리 번호로 되돌려도 통과합니다(실제로 그랬습니다). */
+SNAPS=[];
+loadState({ accounts:[
+    {name:'첫째',cur:'KRW',grp:'투자',cash:1,h:[]},
+    {name:'둘째',cur:'KRW',grp:'투자',cash:2,h:[]} ],
+  fx:{usdkrw:1400}, reb:{acct:'첫째',preset:'',mode:'all',budget:0,tq:2,rows:[]} });
+{
+  const box = i => DOM.put('[data-acct="' + i + '"]',
+    { value:S.accounts[i].name, style:{}, dataset:{ acct:String(i) },
+      focus(){ DOM.active = this; }, setSelectionRange(){} });
+  DOM.clear(); const b0 = box(0), b1 = box(1);
+  /* 0번 칸에서 '첫째고치는중' 을 적던 중 — 편집 표시는 입력 핸들러가 하는 그대로 */
+  b0.value = '첫째고치는중';
+  b0.dataset.was = '첫째'; b0.dataset.wasId = S.accounts[0].id;
+  DOM.active = b0;
+  const keep = pendingEdits();                         /* 앱이 잡아 두는 그대로 */
+  ok(keep.length===1, '적던 칸 하나를 잡아 둠 (' + keep.length + ')');
+  /* 끌어 옮기기 — S 를 먼저 바꾸고 다시 그립니다 */
+  reorderAccounts([1,0]);
+  DOM.clear(); const n0 = box(0), n1 = box(1);         /* 다시 그려 새 칸이 생깁니다 */
+  restoreEdits(keep);
+  ok(S.accounts[0].name==='둘째' && S.accounts[1].name==='첫째',
+     '순서가 바뀜 (' + S.accounts.map(a=>a.name).join(', ') + ')');
+  ok(n1.value==='첫째고치는중' && n1.dataset.was==='첫째',
+     '초안은 옮겨간 제 계좌(1번 자리)로 되돌아감 — ' + n1.value);
+  ok(n0.value==='둘째' && n0.dataset.was===undefined,
+     '그 자리에 온 다른 계좌 칸에는 붙지 않음 (예전에는 여기 붙었습니다) — ' + n0.value);
+  /* 그대로 확정하면 제 계좌의 이름만 바뀝니다 */
+  commitAcctName(n1);
+  ok(S.accounts[1].name==='첫째고치는중' && S.accounts[0].name==='둘째',
+     '확정도 제 계좌에 — ' + S.accounts.map(a=>a.name).join(', '));
+  ok(S.aliases['첫째']==='첫째고치는중' && !S.aliases['둘째'], '옛 이름 연결도 제 계좌 것만');
+}
+/* 그 사이에 계좌가 지워졌으면 되돌릴 곳이 없습니다 */
+SNAPS=[];
+loadState({ accounts:[
+    {name:'첫째',cur:'KRW',grp:'투자',cash:1,h:[]},
+    {name:'둘째',cur:'KRW',grp:'투자',cash:2,h:[]} ],
+  fx:{usdkrw:1400}, reb:{acct:'첫째',preset:'',mode:'all',budget:0,tq:2,rows:[]} });
+{
+  DOM.clear();
+  const b1 = DOM.put('[data-acct="1"]', { value:'둘째고치는중', style:{},
+    dataset:{ acct:'1', was:'둘째', wasId:S.accounts[1].id },
+    focus(){ DOM.active = this; }, setSelectionRange(){} });
+  DOM.active = b1;
+  const keep = pendingEdits();
+  S.accounts.splice(1,1);                              /* 그 계좌를 지웁니다 */
+  DOM.clear();
+  const n0 = DOM.put('[data-acct="0"]', { value:'첫째', style:{}, dataset:{ acct:'0' },
+    focus(){ DOM.active = this; }, setSelectionRange(){} });
+  restoreEdits(keep);
+  ok(n0.value==='첫째' && n0.dataset.was===undefined,
+     '없어진 계좌의 초안은 남은 계좌에 붙지 않음 — ' + n0.value);
+  ok(S.accounts.length===1 && S.accounts[0].name==='첫째', '남은 계좌는 그대로');
+}
+/* 리밸런싱 행도 같은 규칙 — 자리 번호가 아니라 '그 행' 으로 찾습니다.
+   갓 만든 행처럼 코드가 둘 다 비어 있으면 '편집 전 코드가 같은지' 로는 구별되지 않습니다. */
+SNAPS=[];
+loadState({ accounts:[{name:'토스',cur:'KRW',grp:'투자',cash:1e7,h:[]}],
+  fx:{usdkrw:1400},
+  reb:{ acct:'토스', preset:'', mode:'all', budget:0, tq:2, rows:[
+    {name:'가',code:'',cls:'한국주식',price:0,have:0,target:''},
+    {name:'나',code:'',cls:'한국주식',price:0,have:0,target:''},
+    {name:'다',code:'',cls:'한국주식',price:0,have:0,target:''} ] } });
+{
+  const codeBox = i => {
+    const tr = { dataset:{ i:String(i) } };
+    return DOM.put('#tReb tr[data-i="' + i + '"] [data-rf="code"]',
+      { value:S.reb.rows[i].code, style:{}, dataset:{ rf:'code' }, closest:()=>tr,
+        focus(){ DOM.active = this; }, setSelectionRange(){} });
+  };
+  DOM.clear(); const b = [codeBox(0), codeBox(1), codeBox(2)];
+  /* 1번 행('나')의 코드를 적던 중 — 입력 핸들러가 하는 그대로 표시하고 그 행을 기억합니다 */
+  b[1].value = '005930'; b[1].dataset.wasCode = '';
+  rebRowOf.set(b[1], S.reb.rows[1]);
+  DOM.active = b[1];
+  const keep = pendingEdits();
+  S.reb.rows.splice(0,1);                              /* 앞 행이 지워져 자리가 한 칸 밀립니다 */
+  DOM.clear(); const n = [codeBox(0), codeBox(1)];
+  restoreEdits(keep);
+  ok(n[0].value==='005930' && n[0].dataset.wasCode==='',
+     "초안은 제 행('나', 이제 0번 자리)으로 따라감 — " + n[0].value);
+  ok(n[1].value==='' && n[1].dataset.wasCode===undefined,
+     "그 자리에 온 다른 행('다')에는 붙지 않음 (코드가 둘 다 비어 있어도) — '" + n[1].value + "'");
+  /* 확정도 제 행에 들어갑니다 — 그 사이에 자리가 또 밀려도 마찬가지입니다 */
+  S.reb.rows.unshift({name:'새로추가',code:'',cls:'한국주식',price:0,have:0,target:''});
+  commitRebCode(n[0]);                                 /* 칸에 적힌 자리 번호는 0 이지만 */
+  ok(S.reb.rows[1].code==='005930',
+     "확정은 고치던 그 행('나')에 — " + S.reb.rows.map(r=>r.name+':'+r.code).join(', '));
+  ok(S.reb.rows[0].code==='',
+     '그 자리에 온 새 행에는 들어가지 않음 (' + S.reb.rows[0].name + ':' + S.reb.rows[0].code + ')');
+}
+/* 확정도 '적기 시작한 그 계좌' 에 합니다 — 자리 번호는 그 사이에 바뀔 수 있습니다 */
+SNAPS=[];
+loadState({ accounts:[
+    {name:'첫째',cur:'KRW',grp:'투자',cash:1,h:[]},
+    {name:'둘째',cur:'KRW',grp:'투자',cash:2,h:[]} ],
+  fx:{usdkrw:1400}, reb:{acct:'첫째',preset:'',mode:'all',budget:0,tq:2,rows:[]} });
+{
+  const first = S.accounts[0];
+  reorderAccounts([1,0]);                              /* 이제 첫째는 1번 자리 */
+  /* 칸에는 옛 자리 번호가 남아 있고, 편집 표시에는 '누구였는지' 가 적혀 있습니다 */
+  const inp = { value:'첫째고침', style:{},
+                dataset:{ acct:'0', was:'첫째', wasId:first.id } };
+  commitAcctName(inp);
+  ok(S.accounts[1].name==='첫째고침',
+     '적기 시작한 그 계좌의 이름이 바뀜 (' + S.accounts[1].name + ')');
+  ok(S.accounts[0].name==='둘째',
+     '그 자리에 온 다른 계좌는 그대로 (예전에는 이쪽이 바뀌었습니다) — ' + S.accounts[0].name);
+  ok(S.aliases['첫째']==='첫째고침' && !S.aliases['둘째'], '옛 이름 연결도 제 계좌 것만');
+}
+
 `);

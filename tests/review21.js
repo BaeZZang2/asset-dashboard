@@ -132,16 +132,14 @@ SNAPS=[];
   /* 편집 중인 칸 흉내 — pendingEdits 가 찾는 표시(dataset.was)만 갖춥니다 */
   const inp = { value:'토스증', style:{}, selectionStart:3, selectionEnd:3,
                 dataset:{ acct:'0', was:'토스' } };
-  const keep = [{ sel:'[data-acct="0"]', mark:'was', was:inp.dataset.was,
-                  value:inp.value, focus:false, s:3, e:3 }];
   /* 다시 그린 뒤의 새 칸(값은 확정된 이름) */
   const fresh = { value:'토스', style:{}, dataset:{ acct:'0' },
                   focus(){ this.focused=true; }, setSelectionRange(){} };
-  /* restoreEdits 는 $(sel) 로 찾으므로, 그 자리에 새 칸을 놓아 줍니다 */
-  const q = document.querySelector;
-  document.querySelector = sel => sel==='[data-acct="0"]' ? fresh : null;
+  /* 되돌릴 자리는 '몇 번째 칸' 이 아니라 그 계좌를 찾아 옵니다(순서가 바뀌어도 같은 계좌) */
+  const id = S.accounts[0].id;
+  const keep = [{ find:()=> S.accounts.findIndex(x=>x.id===id)===0 ? fresh : null,
+                  mark:'was', was:inp.dataset.was, value:inp.value, focus:false, s:3, e:3 }];
   restoreEdits(keep);
-  document.querySelector = q;
   ok(fresh.value==='토스증',
      '다시 그린 칸에 적던 이름이 되돌아옴 (예전에는 통째로 사라졌습니다) — ' + fresh.value);
   ok(fresh.dataset.was==='토스',

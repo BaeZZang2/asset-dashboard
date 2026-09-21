@@ -32,7 +32,10 @@ const ok=(c,l)=>{ if(!c) failed++; console.log((c?'  OK  ':'  실패')+' '+l); }
   const b=await chromium.launch({executablePath: process.env.PW_CHROME || '/opt/pw-browsers/chromium'});
   const p=await b.newPage({viewport:{width:1150,height:1000}});
   const errs=[]; p.on('pageerror',e=>errs.push(String(e)));
+  /* 처음 한 번만 심습니다 — 다시 켜는 검사(10번)에서 이 스크립트가 또 돌아 저장된 내용을
+     덮어쓰면, '다시 켜도 남아 있나' 를 볼 수 없습니다(실제로 그렇게 헛검사가 됐습니다). */
   await p.addInitScript(st=>{
+    if(localStorage.getItem('ad.state')) return;
     localStorage.setItem('ad.state', st); localStorage.setItem('ad.snaps','[]');
     localStorage.setItem('ad.cfg', JSON.stringify({url:'',secret:'',auto:false}));
   }, JSON.stringify(state));
@@ -208,6 +211,134 @@ const ok=(c,l)=>{ if(!c) failed++; console.log((c?'  OK  ':'  실패')+' '+l); }
   ok(swapped.box==='완전다른계좌', `칸에도 적던 값이 되돌아오지 않음 — ${swapped.box}`);
   ok(swapped.mark===undefined, '편집 표시도 남지 않음');
   ok(swapped.aliases==='{}', `엉뚱한 옛 이름 연결이 생기지 않음 — ${swapped.aliases}`);
+
+  /* ── 7) 이름을 적는 중에 계좌 순서가 바뀌어도 제 계좌를 찾아가는지 ── */
+  /* 패널을 끌어 옮기면 pointerdown 의 preventDefault 때문에 칸이 blur 되지 않은 채로
+     다시 그려집니다. 자리 번호로 되돌리면 그 자리에 온 다른 계좌에 초안이 붙습니다. */
+  const reordered = await p.evaluate(()=>{
+    /* 두 계좌를 원래대로 세워 둡니다 */
+    loadState({ accounts:[
+        {name:'첫째',cur:'KRW',grp:'투자',cash:1,h:[]},
+        {name:'둘째',cur:'KRW',grp:'투자',cash:2,h:[]} ],
+      fx:{usdkrw:1400}, reb:{acct:'첫째',preset:'',mode:'all',budget:0,tq:2,rows:[]} });
+    renderAll();
+    const box = document.querySelector('[data-acct="0"]');
+    /* 진짜 입력 핸들러를 거칩니다 — 편집 표시(어느 계좌였는지 포함)는 그 자리에서 붙습니다 */
+    box.focus();
+    box.value = '첫째고치는중';
+    box.dispatchEvent(new Event('input',{bubbles:true}));
+    reorderAccounts([1,0]);                     /* 끌어 옮기기와 같은 일 */
+    renderAll();
+    const boxes = [...document.querySelectorAll('[data-acct]')].map(b=>b.value);
+    const marks = [...document.querySelectorAll('[data-acct]')].map(b=>b.dataset.was);
+    return { names:S.accounts.map(a=>a.name), boxes, marks,
+             focus:document.activeElement && document.activeElement.dataset.acct };
+  });
+  await p.waitForTimeout(200);
+  ok(reordered.names.join(',')==='둘째,첫째', `순서가 바뀜 — ${reordered.names.join(', ')}`);
+  ok(reordered.boxes[0]==='둘째',
+     `옮겨온 계좌 칸에는 초안이 붙지 않음 (예전에는 '첫째고치는중' 이 붙었습니다) — ${reordered.boxes[0]}`);
+  ok(reordered.boxes[1]==='첫째고치는중',
+     `초안은 제 계좌를 따라감 — ${reordered.boxes[1]}`);
+  ok(reordered.marks[0]===undefined && reordered.marks[1]==='첫째', '편집 표시도 제 계좌에만');
+  ok(reordered.focus==='1', `글쇠도 그 계좌 칸으로 따라감 (${reordered.focus})`);
+  /* 그대로 칸을 벗어나면 제 계좌의 이름만 바뀝니다 */
+  const afterBlur = await p.evaluate(()=>{
+    document.querySelector('[data-acct="1"]').blur();
+    return { names:S.accounts.map(a=>a.name), aliases:JSON.stringify(S.aliases||{}) };
+  });
+  await p.waitForTimeout(300);
+  ok(afterBlur.names.join(',')==='둘째,첫째고치는중',
+     `칸을 벗어나면 제 계좌만 바뀜 (예전에는 '둘째' 가 바뀌었습니다) — ${afterBlur.names.join(', ')}`);
+  ok(/첫째/.test(afterBlur.aliases) && !/둘째/.test(afterBlur.aliases),
+     `옛 이름 연결도 제 계좌 것만 — ${afterBlur.aliases}`);
+
+  /* ── 8) 자동 저장은 고치던 값을 확정하지 않는지 ── */
+  const auto = await p.evaluate(async ()=>{
+    /* 서버가 연결된 것처럼 만들어 둡니다 — 안 그러면 pushToSheet 가 첫 줄에서 돌아가
+       '확정하지 않았다' 가 저절로 참이 됩니다(검사가 아무것도 안 보게 됩니다). */
+    CFG.url = 'http://x'; CFG.auto = true;
+    const sent = [];
+    api = async (action, payload)=>{
+      if(action==='load') return { state:null, snapshots:[] };
+      if(action==='save'){ sent.push(JSON.parse(JSON.stringify(payload.state))); return { ok:true }; }
+      return {};
+    };
+    const box = document.querySelector('[data-acct="0"]');
+    box.focus();
+    box.dispatchEvent(new Event('input',{bubbles:true}));   /* 편집 표시가 붙습니다 */
+    box.value = '적다만이름';
+    box.dispatchEvent(new Event('input',{bubbles:true}));
+    const marked = box.dataset.was;
+    await pushToSheet(true);                     /* 앞선 편집으로 예약돼 있던 자동 저장이 돎 */
+    const hand = { nm:S.accounts[0].name, mark:box.dataset.was, val:box.value,
+                   marked, upNm:(sent[0]&&sent[0].accounts[0].name) };
+    await pushToSheet(false);                    /* 사람이 저장을 누르면 그때 확정 */
+    return { auto:hand, manual:{ nm:S.accounts[0].name,
+                                 upNm:(sent[1]&&sent[1].accounts[0].name), n:sent.length } };
+  });
+  await p.waitForTimeout(300);
+  ok(auto.auto.marked==='둘째', `편집 표시가 붙은 상태에서 검사 (${auto.auto.marked})`);
+  ok(auto.auto.nm==='둘째',
+     `자동 저장은 고치던 이름을 확정하지 않음 (예전에는 '적다만이름' 이 굳었습니다) — ${auto.auto.nm}`);
+  ok(auto.auto.upNm==='둘째',
+     `서버로 올라간 것도 확정된 이름뿐 (예전에는 '적다만이름' 이 올라갔습니다) — ${auto.auto.upNm}`);
+  ok(auto.auto.mark==='둘째' && auto.auto.val==='적다만이름', '적던 값은 칸에 그대로 남음');
+  ok(auto.manual.nm==='적다만이름' && auto.manual.upNm==='적다만이름',
+     `사람이 저장을 누르면 그때 확정되어 함께 올라감 — ${auto.manual.nm} / ${auto.manual.upNm}`);
+  ok(auto.manual.n===2, `두 번 다 실제로 올라감 (${auto.manual.n}번) — 첫 줄에서 돌아간 것이 아닙니다`);
+
+  /* ── 9) 리밸런싱 행이 밀리면 그 자리의 초안은 되돌리지 않는지 ── */
+  /* 행이 지워져 자리가 밀리면, 자리 번호로 되돌린 초안은 다른 종목의 칸에 붙습니다. */
+  const shifted = await p.evaluate(()=>{
+    loadState({ accounts:[{name:'토스',cur:'KRW',grp:'투자',cash:1e7,h:[]}],
+      fx:{usdkrw:1400}, mkts:{'005930':'KR','069500':'KR'},
+      /* 코드가 모두 비어 있는 갓 만든 행들 — '편집 전 코드가 같은지' 로만 가려내면 서로
+         구별되지 않아 다른 행에 초안이 붙습니다(그래서 행 자체로 찾습니다). */
+      reb:{ acct:'토스', preset:'', mode:'all', budget:0, tq:2, rows:[
+        {name:'가',code:'',cls:'한국주식',price:0,have:0,target:''},
+        {name:'나',code:'',cls:'한국주식',price:0,have:0,target:''},
+        {name:'다',code:'',cls:'한국주식',price:0,have:0,target:''} ] } });
+    show('reb'); renderReb();
+    /* 1번 행(KODEX)의 코드를 적다가, 앞 행이 지워져 자리가 한 칸씩 밀립니다.
+       그러면 1번 자리에는 다른 종목(TIGER)이 옵니다 — 거기에 초안이 붙으면 안 됩니다. */
+    const box = document.querySelector('#tReb tr[data-i="1"] [data-rf="code"]');
+    box.focus(); box.value = '0695';
+    box.dispatchEvent(new Event('input',{bubbles:true}));   /* 편집 표시가 붙습니다 */
+    S.reb.rows.splice(0,1);
+    renderReb();
+    const now = document.querySelector('#tReb tr[data-i="1"] [data-rf="code"]');
+    const mine = document.querySelector('#tReb tr[data-i="0"] [data-rf="code"]');
+    return { rows:S.reb.rows.map(r=>r.name+':'+r.code),
+             box0:now.value, mark:now.dataset.wasCode,
+             mine:mine.value, mineMark:mine.dataset.wasCode };
+  });
+  await p.waitForTimeout(200);
+  ok(shifted.rows.join(',')==='나:,다:', `앞 행이 지워져 자리가 밀림 — ${shifted.rows.join(',')}`);
+  ok(shifted.box0==='',
+     `그 자리에 온 다른 행 칸에 초안이 붙지 않음 (예전에는 '0695' 가 붙었습니다) — '${shifted.box0}'`);
+  ok(shifted.mark===undefined, '그 행에는 편집 표시도 붙지 않음 — 확정도 일어나지 않습니다');
+  ok(shifted.mine==='0695' && shifted.mineMark==='',
+     `초안은 제 행(밀려서 0번 자리)으로 따라감 — '${shifted.mine}'`);
+
+  /* ── 10) 못 올린 내용이 있으면 다시 켤 때 이어서 올리는지 ── */
+  /* 창을 닫을 때 확정되는 값은 기기에만 남습니다. 다시 켰을 때 '올릴 것이 있다' 는 표시가
+     없으면 앱은 서버 값을 그대로 받아들여, 그 내용이 다른 기기의 저장에 덮여 사라집니다. */
+  const marked = await p.evaluate(()=>{
+    CFG.url = ''; LS.set('ad.cfg', CFG);          /* 다시 켤 때 서버로 나가지 않게 */
+    S.accounts[0].cash = 12345; markDirty();      /* 아직 올리지 못한 변경 */
+    return { dirty, flag: localStorage.getItem('ad.dirty') };
+  });
+  ok(marked.dirty===true && marked.flag==='true',
+     `못 올린 것이 있다는 표시가 기기에도 적힘 (${marked.flag})`);
+  await p.reload();                                /* 창을 닫았다 다시 켠 것과 같습니다 */
+  await p.waitForTimeout(600);
+  const resumed = await p.evaluate(()=>({ dirty, cash:S.accounts[0].cash,
+                                          btn:($('#btnSave')||{}).textContent }));
+  ok(resumed.cash===12345, `적어 둔 내용은 그대로 (${resumed.cash})`);
+  ok(resumed.dirty===true,
+     `다시 켜도 '올릴 것이 있다' 를 이어받음 (예전에는 잊어버려 덮였습니다) — ${resumed.dirty}`);
+  ok(/•/.test(resumed.btn||''), `저장 단추에도 표시가 남음 — ${resumed.btn}`);
 
   ok(errs.length===0, errs.length ? '페이지 오류: '+errs.join(' | ') : '페이지 오류 없음');
   await b.close(); srv.close();
