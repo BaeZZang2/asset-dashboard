@@ -1667,6 +1667,15 @@ function marketOfCode(code){
    거래소를 밝힌 코드(KRX:·NASDAQ:…), 업비트 마켓 코드(KRW-·BTC-·USDT-), 국내 6자리 숫자.
    알파벳 티커(AAPL)는 여기 들어가지 않습니다 — 그것은 '아마 미국' 이라는 짐작이고,
    코인 지갑에 BTC 라고 적는 사람도 있습니다(그때는 시세 출처가 더 확실한 근거입니다). */
+/* 검색 결과가 어느 시장인가 — 서버가 알려 준 값을 그대로 믿지 않습니다.
+   모양으로 정해지는 코드는 그 값이 이깁니다: 서버가 옛 버전이면 0072R0(TIGER KRX금현물)
+   같은 국내 단축코드를 'US' 라고 보내오고, 그러면 팝업에 US 로 뜨고 자동매칭도 그 종목을
+   그냥 지나칩니다. 모양이 말해 주지 않는 코드는 서버의 말을 믿고(코인 마켓 등),
+   그것도 없으면 코드 모양으로 가늠합니다. */
+function itemMarket(it){
+  const c = (it && it.code) || '';
+  return codeMarketFixed(c) || (MKTS.includes(it && it.market) ? it.market : codeMarket(c));
+}
 function codeMarketFixed(code){
   const c = mktKey(code); if(!c) return '';
   const p = prefixMarket(c); if(p) return p;
@@ -2590,8 +2599,8 @@ async function autoMatch(only, stay){
       const r = await api('search',{ q:j.label });
       /* 서버는 업비트의 BTC·USDT 마켓도 CRYPTO 로 내려줍니다. 그 시세는 원화가 아니라
          코인 기준 값이라 그대로 쓰면 수량이 크게 틀리므로, 코드 접두사로 한 번 더 가립니다. */
-      const hit = (r.items||[]).filter(it=> it.market===j.market && codeMarket(it.code)===j.market )[0];
-      if(hit) j.apply(hit.code, hit.name, codeMarket(hit.code)===hit.market ? hit.market : '');
+      const hit = (r.items||[]).filter(it=> itemMarket(it)===j.market )[0];
+      if(hit) j.apply(hit.code, hit.name, itemMarket(hit));
     }catch(e){ /* 개별 실패는 넘어감 */ }
   }
   t.remove();
@@ -2628,15 +2637,15 @@ function bindCodes(){
     modal(`'${esc(g.label)}' 코드 선택`,
       items.map((it,i)=>{
         /* 업비트의 BTC·USDT 마켓은 시세가 원화가 아니라 코인 기준 값으로 옵니다. */
-        const alt = codeMarket(it.code)==='CRYPTO_ALT';
+        const mkt = itemMarket(it);
+        const alt = mkt==='CRYPTO_ALT';
         return `<label style="display:flex;gap:9px;align-items:center;padding:9px;border-bottom:1px solid var(--line);cursor:pointer">
         <input type="radio" name="pick" value="${i}" ${i===0?'checked':''} style="width:auto">
-        <span style="flex:1"><b>${esc(it.name)}</b>${alt?' <span class="tag no">원화 시세 아님</span>':''}<br><span class="mut" style="font-size:12px">${esc(it.code)} · ${esc(it.market)}${it.nation?' · '+esc(it.nation):''}${alt?' · 금액 계산에 쓸 수 없습니다':''}</span></span>
+        <span style="flex:1"><b>${esc(it.name)}</b>${alt?' <span class="tag no">원화 시세 아님</span>':''}<br><span class="mut" style="font-size:12px">${esc(it.code)} · ${esc(mkt)}${it.nation?' · '+esc(it.nation):''}${alt?' · 금액 계산에 쓸 수 없습니다':''}</span></span>
       </label>`; }).join(''),
       ()=>{ const v=$('input[name=pick]:checked'); if(!v) return true;
             const it=items[+v.value];
-            /* 서버가 내려준 시장과 코드 모양이 다를 수 있습니다(코인 마켓). 코드를 믿습니다. */
-            applyToGroup(g, it.code, it.name, it.market==='CRYPTO' ? codeMarket(it.code) : it.market);
+            applyToGroup(g, it.code, it.name, itemMarket(it));
             markDirty(); renderCodes(); renderAll(); return true; });
   });
 }

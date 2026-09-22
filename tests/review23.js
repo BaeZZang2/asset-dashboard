@@ -98,4 +98,29 @@ loadState({ accounts:[{name:'토스',cur:'KRW',grp:'투자',cash:0,h:[]}], fx:{u
      '제대로 된 코드에는 군더더기를 붙이지 않음');
   ok(!/6자리/.test(why('GLD')), '미국 티커(GLD)에는 국내 안내를 붙이지 않음');
 }
+/* ══ 검색 팝업·자동매칭이 서버의 'US' 를 그대로 믿지 않는지 ══ */
+/* 옛 서버는 0072R0 을 market:'US' 로 보냅니다. 그걸 그대로 쓰면 팝업에 'US' 로 뜨고,
+   자동매칭은 국내 일감과 안 맞다며 그 종목을 지나칩니다. */
+SNAPS=[];
+loadState({ accounts:[{name:'토스',cur:'KRW',grp:'투자',cash:0,
+    h:[H('TIGER KRX금현물','','금',10,0)]}], fx:{usdkrw:1400} });
+{
+  const fromOldServer = { code:'0072R0', name:'TIGER KRX금현물', market:'US', nation:'KOR' };
+  ok(itemMarket(fromOldServer)==='KR',
+     "서버가 US 라 해도 앱은 KR 로 봄 (팝업에 그렇게 보입니다) — 실제 " + itemMarket(fromOldServer));
+  /* 자동매칭 일감과 맞아떨어져야 합니다 */
+  const job = matchJobs().find(j=>j.label==='TIGER KRX금현물');
+  ok(!!job && job.market==='KR', '국내 일감으로 잡힘 (' + (job && job.market) + ')');
+  ok(itemMarket(fromOldServer)===job.market, '그래서 자동매칭이 이 결과를 고름 (예전에는 지나쳤습니다)');
+  job.apply(fromOldServer.code, fromOldServer.name, itemMarket(fromOldServer));
+  const h = S.accounts[0].h[0];
+  ok(h.c==='0072R0' && marketOfCode('0072R0')==='KR', '코드가 붙고 대장에도 KR — ' + h.c);
+  ok(setHoldPrice(h, 14250, 'KRW', 'naver-basic')===true && h.p===14250,
+     '그 뒤 시세가 원화로 들어감 (' + h.p + ')');
+  /* 서버가 코인 마켓처럼 모양이 말해 주지 않는 것을 알려 줄 때는 그 말을 믿습니다 */
+  ok(itemMarket({ code:'BTC', market:'CRYPTO' })==='CRYPTO', '모양이 모호하면 서버의 말을 믿음');
+  ok(itemMarket({ code:'AAPL', market:'US' })==='US', '미국 티커는 그대로 US');
+  ok(itemMarket({ code:'KRW-BTC', market:'US' })==='CRYPTO', '업비트 마켓 코드는 모양이 이김');
+}
+
 `);
