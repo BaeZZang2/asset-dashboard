@@ -76,6 +76,26 @@ console.log('── 소스 점검 ──');
   ok(seen, 'R1b pickable 이 codeFitsReb 로 못 쓰는 코드를 가려낸다');
 }
 
+/* R2b. 모양으로 시장이 정해지는 코드(국내 6자리·거래소 접두사·업비트 마켓)는 그 값이
+   이깁니다 — 시세 출처·검색 결과가 틀릴 수 있습니다. 국내 ETF(411060)가 'US' 로 적혀
+   원화 계좌 현재가가 버려졌습니다. setCodeMarket 이 그 판단을 먼저 해야 합니다. */
+{
+  const bad = [];
+  const at = code.findIndex(l=>/^function setCodeMarket\b/.test(l));
+  if(at < 0) bad.push('setCodeMarket 을 찾지 못함');
+  else {
+    const body = blockOf(at+2);
+    const iFixed = body.findIndex(l=>/codeMarketFixed\(/.test(l));
+    const iClaim = body.findIndex(l=>/MKTS\.includes\(mkt\)/.test(l));
+    if(iFixed < 0) bad.push('모양 판단(codeMarketFixed)을 쓰지 않음');
+    else if(iClaim >= 0 && iFixed > iClaim) bad.push('넘겨받은 시장을 먼저 씀');
+  }
+  /* 불러올 때 잘못 적힌 값을 바로잡는 자리도 있어야 합니다(한 번 적히면 스스로 낫지 않습니다) */
+  const heal = hits(/scrubMkts\(\)/).filter(x=>!/^function/.test(x.l.trim()));
+  if(!heal.length) bad.push('불러올 때 대장을 바로잡지 않음');
+  ok(bad.length===0, 'R2b 모양으로 정해지는 코드의 시장은 덮이지 않는다'
+     + (bad.length?' ('+bad.join(', ')+')':''));
+}
 /* R2. 대장(S.mkts)에 쓰는 것은 setCodeMarket 뿐입니다. */
 {
   const h = hits(/S\.mkts\s*\[[^\]]*\]\s*=/).filter(x=>!inside(x.n, ['setCodeMarket']));
@@ -371,6 +391,18 @@ const bad3 = [];
  ['upbit','BTC-ETH','CRYPTO_ALT']].forEach(([s,c,want])=>{
   if(srcMarket(s,c)!==want) bad3.push('srcMarket('+s+','+c+')='+srcMarket(s,c));
 });
+/* 모양으로 정해지는 코드는 출처가 뭐라 해도 그 시장입니다 — 국내 6자리 ETF 가 stooq 로
+   넘어가 'US' 로 적히면서 원화 계좌 현재가가 버려졌습니다(TIGER KRX금현물 411060). */
+[['411060','KR'],['005930','KR'],['KRX:005930','KR'],['NASDAQ:NVDA','US'],
+ ['KRW-BTC','CRYPTO'],['BTC-ETH','CRYPTO_ALT']].forEach(([c,want])=>{
+  if(codeMarketFixed(c)!==want) bad3.push('codeMarketFixed('+c+')='+codeMarketFixed(c));
+  ['US','KR','CRYPTO','CRYPTO_ALT',''].forEach(claim=>{
+    setCodeMarket(c, claim);                      /* 틀린 주장이 와도 */
+    if(marketOfCode(c)!==want) bad3.push(c+' ← '+claim+' 에 덮임: '+marketOfCode(c));
+  });
+});
+/* 모양이 정해 주지 않는 코드는 출처가 근거입니다(코인 지갑에 BTC 라고 적는 사람도 있습니다) */
+['AAPL','BRK-B','ZZTOP'].forEach(c=>{ if(codeMarketFixed(c)) bad3.push('codeMarketFixed('+c+') 가 넘겨짚음'); });
 ok(bad3.length===0, 'B3 코드 모양·접두사·시세 출처의 판단이 일치' + (bad3.length?' ('+bad3.join(', ')+')':''));
 
 /* B4. 통화를 모르는 시장은 어떤 계획에서도 쓰이지 않아야 합니다. */

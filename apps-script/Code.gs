@@ -226,7 +226,20 @@ function num(x) {
   return isFinite(n) ? n : NaN;
 }
 
-function isKrCode(c) { return /^\d{6}$/.test(String(c).trim()); }
+/**
+ * 국내 종목 코드인지. 6자리 숫자, 거래소를 밝힌 형태(KRX:411060),
+ * 야후식 접미사(411060.KS / .KQ) 를 모두 국내로 봅니다 — 앱도 같은 판단을 합니다.
+ * 이 판단이 좁으면 국내 ETF 가 해외 조회로 넘어가고, 앱은 그 출처만 보고 'US' 로 적었습니다.
+ */
+function isKrCode(c) {
+  return /^\d{6}$/.test(String(c).trim()) || krDigits(c) !== '';
+}
+/** 국내 코드에서 6자리 숫자만 꺼냅니다(KRX:411060 · 411060.KS → 411060). 아니면 빈 값. */
+function krDigits(c) {
+  var s = String(c || '').trim().toUpperCase();
+  var m = /^(?:KRX|KOSPI|KOSDAQ|KONEX):(\d{6})$/.exec(s) || /^(\d{6})\.(?:KS|KQ)$/.exec(s);
+  return m ? m[1] : (/^\d{6}$/.test(s) ? s : '');
+}
 
 /** 업비트 마켓 코드인지 (KRW-BTC, BTC-ETH, USDT-SOL …) */
 function isCoinCode(c) {
@@ -280,8 +293,11 @@ function searchSymbol(q) {
     } catch (e) {}
   }
 
-  // 3순위: 미국 티커 직접 입력으로 간주
-  if (!out.length && /^[A-Za-z.\-]{1,6}$/.test(q)) {
+  // 3순위: 코드를 직접 적은 것으로 간주. 국내 코드 모양이면 국내로 돌려줍니다 —
+  //         'US' 로 돌려주면 앱이 그 말을 믿고 원화 계좌의 현재가를 버립니다.
+  if (!out.length && isKrCode(q)) {
+    out.push({ code: krDigits(q), name: krDigits(q), market: 'KR', reuters: '', nation: 'KOR', src: 'raw' });
+  } else if (!out.length && /^[A-Za-z.\-]{1,6}$/.test(q)) {
     out.push({ code: q.toUpperCase(), name: q.toUpperCase(), market: 'US', reuters: '', nation: 'USA', src: 'raw' });
   }
 
@@ -336,13 +352,14 @@ function getQuotes(items) {
   // ── 국내 ──
   var krFail = [];
   krCodes.forEach(function (c) {
-    try { out[c] = quoteKR(c); }
+    /* 어떤 형태로 적혀 왔든 조회는 6자리 숫자로 합니다(KRX:411060 · 411060.KS → 411060) */
+    try { out[c] = quoteKR(krDigits(c)); }
     catch (e) { errs[c] = e.message; krFail.push(c); }
   });
   if (krFail.length) {
-    var gk = gfBatch(krFail.map(function (c) { return 'KRX:' + c; }));
+    var gk = gfBatch(krFail.map(function (c) { return 'KRX:' + krDigits(c); }));
     krFail.forEach(function (c) {
-      var g = gk['KRX:' + c];
+      var g = gk['KRX:' + krDigits(c)];
       if (g && g.ok) { out[c] = g; delete errs[c]; }
       else errs[c] += ' / ' + ((g && g.error) || 'googlefinance: 값 없음');
     });

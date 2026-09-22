@@ -43,12 +43,25 @@ ok(srcMarket('upbit','KRW-BTC')==='CRYPTO', '업비트 원화 마켓 → CRYPTO'
 ok(srcMarket('upbit','BTC-ETH')==='CRYPTO_ALT', '업비트 BTC 마켓 → CRYPTO_ALT');
 ok(srcMarket('googlefinance','005930')==='' && srcMarket('','005930')==='', '국내·해외 겸용/빈 값은 판단하지 않음');
 
-/* 6자리 숫자라 국내처럼 보이는 코드라도, 시세가 해외에서 왔으면 원화 계획에서 막힘 */
+/* 국내 6자리 코드는 '모양으로 정해지는' 코드입니다 — 출처가 뭐라 해도 KR 입니다.
+   예전에는 반대였습니다(시세 출처가 더 확실한 근거). 그 규칙 때문에 TIGER KRX금현물(411060)
+   같은 국내 ETF 가 US 로 적히고, 원화 계좌의 현재가가 '시세는 USD 로 온다' 며 버려졌습니다.
+   6자리 숫자는 KRX 만 쓰는 닫힌 이름표이고, 서버는 6자리 코드를 stooq/yahoo 에 묻지도
+   않습니다(네이버 → googlefinance KRX:). 그래서 모양이 이깁니다. */
 S = base(); SNAPS=[];
-S.reb.mode='cash'; S.reb.rows=[row('수수께끼','123456','기타주식',38000,0)];
-ok(codeFitsReb('123456')===true, '코드 모양으로는 원화 계획에 통과');
-setCodeMarket('123456', srcMarket('stooq','123456'));         /* 실제로는 해외에서 받아온 시세 */
-ok(codeFitsReb('123456')===false, '출처가 해외로 확인되면 원화 계획에서 막힘');
+S.reb.mode='cash'; S.reb.rows=[row('금현물','411060','금',15790,0)];
+ok(codeFitsReb('411060')===true, '코드 모양으로 원화 계획에 통과');
+setCodeMarket('411060', srcMarket('stooq','411060'));         /* 출처가 US 라고 알려 와도 */
+ok(marketOfCode('411060')==='KR',
+   '국내 6자리는 그대로 KR (예전에는 US 로 덮여 국내 ETF 단가가 버려졌습니다) — 실제 '
+   + marketOfCode('411060'));
+ok(codeFitsReb('411060')===true, '원화 계획에서 계속 쓸 수 있음');
+ok(holdPriceOk('KRW','411060')===true, '원화 계좌 단가도 그대로 들어감');
+/* 모양으로 정해지지 않는 코드(알파벳 티커)는 여전히 출처가 근거입니다 */
+setCodeMarket('ZZTOP', srcMarket('stooq','ZZTOP'));
+ok(marketOfCode('ZZTOP')==='US', '모양이 정해 주지 않는 코드는 출처를 따름');
+setCodeMarket('BTCX', srcMarket('upbit','KRW-BTCX'));
+ok(marketOfCode('BTCX')==='CRYPTO', '업비트에서 왔다면 코인으로 (모양만으로는 US 로 보이는 코드)');
 
 /* ══ 5. 계획의 통화 하나로 판정 ══ */
 S = base(); SNAPS=[];
