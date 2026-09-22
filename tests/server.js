@@ -11,7 +11,11 @@ try { F = new Function(src + '; return { isKrCode, krDigits, isCoinCode, searchS
 catch(e){ console.log('  실패 Code.gs 를 읽을 수 없습니다: ' + e.message); process.exit(1); }
 
 /* 국내 코드로 알아보는 모양 — 앱의 codeMarketFixed 와 같은 집합이어야 합니다 */
-[['411060', '411060', '6자리 숫자'],
+[['0072R0', '0072R0', '글자 섞인 국내 단축코드(TIGER KRX금현물)'],
+ ['0072r0', '0072R0', '  소문자로 적어도 같은 코드'],
+ ['KRX:0072R0', '0072R0', '  거래소를 밝힌 형태'],
+ ['0072R0.KS', '0072R0', '  야후식 접미사'],
+ ['411060', '411060', '6자리 숫자(ACE KRX금현물)'],
  ['KRX:411060', '411060', '거래소를 밝힌 코드'],
  ['KOSDAQ:411060', '411060', '코스닥 접두사'],
  ['411060.KS', '411060', '야후식 코스피 접미사'],
@@ -21,7 +25,8 @@ catch(e){ console.log('  실패 Code.gs 를 읽을 수 없습니다: ' + e.messa
 });
 /* 국내가 아닌 것을 국내로 보지 않습니다 */
 [['AAPL','미국 티커'],['BRK.B','미국 클래스 주식'],['KRW-BTC','업비트 마켓'],
- ['A411060','증권사 표기(앱도 국내로 보지 않습니다)']].forEach(([c,why])=>
+ ['GOOGL','5글자 미국 티커'],['NSRGY','OTC 티커'],
+ ['A411060','증권사 표기(7자리라 국내로 보지 않습니다)']].forEach(([c,why])=>
   ok(F.isKrCode(c) === false, why + '(' + c + ') 은 국내로 보지 않음'));
 ok(F.isCoinCode('KRW-BTC') === true && F.isCoinCode('411060') === false, '코인 코드 판단은 그대로');
 

@@ -231,14 +231,20 @@ function num(x) {
  * 야후식 접미사(411060.KS / .KQ) 를 모두 국내로 봅니다 — 앱도 같은 판단을 합니다.
  * 이 판단이 좁으면 국내 ETF 가 해외 조회로 넘어가고, 앱은 그 출처만 보고 'US' 로 적었습니다.
  */
-function isKrCode(c) {
-  return /^\d{6}$/.test(String(c).trim()) || krDigits(c) !== '';
-}
-/** 국내 코드에서 6자리 숫자만 꺼냅니다(KRX:411060 · 411060.KS → 411060). 아니면 빈 값. */
+function isKrCode(c) { return krDigits(c) !== ''; }
+/**
+ * 국내 단축코드만 꺼냅니다(KRX:411060 · 0072R0.KS → 411060 · 0072R0). 아니면 빈 값.
+ * 한국거래소 단축코드는 6자리입니다 — 숫자만인 것(411060 = ACE KRX금현물)도,
+ * 글자가 섞인 것(0072R0 = TIGER KRX금현물)도 있습니다. 숫자 공간이 차서 거래소가
+ * 영문·숫자 섞인 코드를 발급하기 시작했습니다. '6자리 숫자' 로만 보면 그런 국내 ETF 가
+ * 해외 조회로 넘어가고, 앱은 그 출처만 보고 'US' 로 적었습니다.
+ * 미국 티커와 겹치지 않습니다 — 미국 티커는 숫자를 섞지 않습니다.
+ */
 function krDigits(c) {
   var s = String(c || '').trim().toUpperCase();
-  var m = /^(?:KRX|KOSPI|KOSDAQ|KONEX):(\d{6})$/.exec(s) || /^(\d{6})\.(?:KS|KQ)$/.exec(s);
-  return m ? m[1] : (/^\d{6}$/.test(s) ? s : '');
+  var m = /^(?:KRX|KOSPI|KOSDAQ|KONEX):([0-9A-Z]{6})$/.exec(s) || /^([0-9A-Z]{6})\.(?:KS|KQ)$/.exec(s);
+  var code = m ? m[1] : s;
+  return /^(?=.*\d)[0-9A-Z]{6}$/.test(code) ? code : '';
 }
 
 /** 업비트 마켓 코드인지 (KRW-BTC, BTC-ETH, USDT-SOL …) */
